@@ -1,13 +1,13 @@
 [app]
 
-title = Ayson V15
-package.name = aysonv15
+title = Ayson V16
+package.name = aysonv16
 package.domain = org.ayson
 
 source.dir = .
 source.include_exts = py,png,jpg,kv,atlas
 
-version = 1.5
+version = 1.6
 
 requirements = python3,kivy,certifi
 
