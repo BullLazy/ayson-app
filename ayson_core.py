@@ -895,7 +895,7 @@ class Resolver:
 
         raise RuntimeError("Aylive/Aylink akışı çözülemedi; rastgele dış link döndürülmedi.")
 
-        def resolve_tulink(self, url, depth=0):
+    def resolve_tulink(self, url, depth=0):
         self._guard_depth(depth)
         url = clean_url(url)
 
