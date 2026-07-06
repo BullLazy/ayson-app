@@ -6,7 +6,7 @@ from kivy.uix.button import Button
 from kivy.uix.label import Label
 from kivy.uix.textinput import TextInput
 
-from ayson_core import resolve_url
+from ayson_core import resolve_url, VERSION
 
 
 class AysonApp(App):
@@ -20,10 +20,10 @@ class AysonApp(App):
         )
 
         title = Label(
-            text="Ayson Link Çözücü",
+            text="Ayson Link Çözücü\n" + VERSION,
             size_hint_y=None,
-            height=48,
-            font_size=24
+            height=72,
+            font_size=20
         )
 
         self.input = TextInput(
@@ -68,20 +68,21 @@ class AysonApp(App):
             self.output.text = "Link girmen lazım."
             return
 
-        self.output.text = "Çözülüyor..."
+        self.output.text = "Çözülüyor...\n" + VERSION
 
         def work(_dt):
             try:
                 final = resolve_url(url)
                 self.output.text = final
             except Exception as e:
-                self.output.text = "Hata:\n" + str(e)
+                self.output.text = "Hata:\n" + str(e) + "\n\nSürüm:\n" + VERSION
 
         Clock.schedule_once(work, 0.1)
 
     def on_copy(self, *_):
         text = self.output.text.strip()
-        if text and not text.startswith("Hata") and text != "Sonuç burada görünecek.":
+
+        if text and not text.startswith("Hata") and "Sonuç burada" not in text:
             Clipboard.copy(text)
             self.output.text = text + "\n\nKopyalandı."
 
