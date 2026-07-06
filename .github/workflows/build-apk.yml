@@ -46,9 +46,9 @@ jobs:
           python3 -m pip install --upgrade pip wheel setuptools
           python3 -m pip install buildozer==1.6.0 cython==0.29.37
 
-      - name: Clean broken SDK cache
+      - name: Clean old Buildozer output
         run: |
-          rm -rf "$HOME/.buildozer/android/platform/android-sdk"
+          rm -rf .buildozer bin
 
       - name: Build APK
         run: |
