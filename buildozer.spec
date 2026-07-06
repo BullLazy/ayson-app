@@ -7,9 +7,9 @@ package.domain = org.ayson
 source.dir = .
 source.include_exts = py,png,jpg,kv,atlas
 
-version = 1.0
+version = 1.1
 
-requirements = python3,kivy
+requirements = python3,kivy,certifi
 
 orientation = portrait
 
