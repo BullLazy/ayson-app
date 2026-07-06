@@ -12,7 +12,7 @@ source.include_exts = py,png,jpg,kv,atlas,xml
 
 version = 2.1
 
-requirements = python3,kivy,certifi
+requirements = python3,kivy,certifi,pyjnius
 
 orientation = portrait
 
