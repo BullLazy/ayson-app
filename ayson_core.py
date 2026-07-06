@@ -15,7 +15,7 @@ except Exception:
     certifi = None
 
 
-VERSION = "V1.4-filter-static-assets"
+VERSION = "V1.5-global-asset-filter"
 
 
 def make_unverified_context(*args, **kwargs):
@@ -26,7 +26,7 @@ def make_unverified_context(*args, **kwargs):
 
 
 # Android APK içinde Python bazen CA sertifika zincirini bulamıyor.
-# Bu yüzden bu araçta SSL doğrulamasını global olarak kapatıyoruz.
+# Bu araç sadece link çözme amacıyla kullanıldığı için SSL doğrulamasını kapatıyoruz.
 ssl._create_default_https_context = ssl._create_unverified_context
 ssl.create_default_context = make_unverified_context
 
@@ -47,6 +47,24 @@ OUO_HOSTS = {"ouo.io", "ouo.press"}
 
 URL_RE = re.compile(r"https?://[^\s'\"<>`]+", re.I)
 
+BAD_ASSET_HOSTS = {
+    "cdn.jsdelivr.net",
+    "cdnjs.cloudflare.com",
+    "stackpath.bootstrapcdn.com",
+    "maxcdn.bootstrapcdn.com",
+    "code.jquery.com",
+    "ajax.googleapis.com",
+    "fonts.googleapis.com",
+    "fonts.gstatic.com",
+    "unpkg.com",
+    "cdn.datatables.net",
+}
+
+BAD_ASSET_EXTS = (
+    ".css", ".js", ".png", ".jpg", ".jpeg", ".gif", ".webp",
+    ".svg", ".ico", ".woff", ".woff2", ".ttf", ".eot", ".map"
+)
+
 
 def clean_url(u):
     return html.unescape(str(u)).strip().strip(".,;)'\"`]")
@@ -63,6 +81,33 @@ def host_of(url):
         return host
     except Exception:
         return ""
+
+
+def is_static_asset_url(url):
+    url_l = str(url).lower()
+    h = host_of(url)
+    p = urllib.parse.urlparse(url).path.lower()
+
+    if h in BAD_ASSET_HOSTS:
+        return True
+
+    if p.endswith(BAD_ASSET_EXTS):
+        return True
+
+    bad_words = [
+        "bootstrap",
+        "jquery",
+        "fontawesome",
+        "popper",
+        "datatables",
+        "sweetalert",
+        "cloudflare",
+        "jsdelivr",
+        "googleapis",
+        "gstatic",
+    ]
+
+    return any(w in url_l for w in bad_words)
 
 
 def b64_try_decode(s):
@@ -138,30 +183,36 @@ class Resolver:
         text = text or ""
         out = []
 
-        for u in URL_RE.findall(text):
+        def add_url(u):
             u = clean_url(u)
+
+            if u.startswith("//"):
+                u = "https:" + u
+
+            if not u.startswith("http"):
+                return
+
+            if is_static_asset_url(u):
+                return
 
             if u not in out:
                 out.append(u)
 
+        for u in URL_RE.findall(text):
+            add_url(u)
+
         for m in re.findall(r"decodeURIComponent\(['\"]([^'\"]+)['\"]\)", text, re.I):
             try:
-                u = clean_url(urllib.parse.unquote(m))
-
-                if u.startswith("http") and u not in out:
-                    out.append(u)
+                add_url(urllib.parse.unquote(m))
             except Exception:
                 pass
 
         for m in re.findall(r"atob\(['\"]([^'\"]+)['\"]\)", text, re.I):
-            u = clean_url(b64_try_decode(m))
-
-            if u.startswith("http") and u not in out:
-                out.append(u)
+            add_url(b64_try_decode(m))
 
         return out
 
-        def resolve_bildirim(self, url):
+    def resolve_bildirim(self, url):
         final_url, status, headers, body = self.request(url)
 
         candidates = []
@@ -182,6 +233,7 @@ class Resolver:
             r"""window\.open\(["']([^"']+)["']""",
             r"""location(?:\.href)?\s*=\s*["']([^"']+)["']""",
             r"""href=["']([^"']+)["']""",
+            r"""src=["']([^"']+)["']""",
         ]
 
         for pat in patterns:
@@ -191,73 +243,42 @@ class Resolver:
                 if m.startswith("//"):
                     m = "https:" + m
 
-                if m.startswith("http") and m not in candidates:
+                if not m.startswith("http"):
+                    continue
+
+                if is_static_asset_url(m):
+                    continue
+
+                if m not in candidates:
                     candidates.append(m)
 
-        def is_bad_candidate(candidate):
-            h = host_of(candidate)
-            p = urllib.parse.urlparse(candidate).path.lower()
-
-            bad_hosts = {
-                "cdn.jsdelivr.net",
-                "cdnjs.cloudflare.com",
-                "stackpath.bootstrapcdn.com",
-                "maxcdn.bootstrapcdn.com",
-                "code.jquery.com",
-                "ajax.googleapis.com",
-                "fonts.googleapis.com",
-                "fonts.gstatic.com",
-                "unpkg.com",
-                "cdn.datatables.net",
-            }
-
-            bad_exts = (
-                ".css", ".js", ".png", ".jpg", ".jpeg", ".gif", ".webp",
-                ".svg", ".ico", ".woff", ".woff2", ".ttf", ".eot", ".map"
-            )
-
-            if h in bad_hosts:
-                return True
-
-            if p.endswith(bad_exts):
-                return True
-
-            if "bootstrap" in candidate.lower():
-                return True
-
-            if "jquery" in candidate.lower():
-                return True
-
-            return False
-
         cleaned = []
+
         for c in candidates:
             c = clean_url(c)
 
             if not c.startswith("http"):
                 continue
 
-            if c in cleaned:
+            if is_static_asset_url(c):
                 continue
 
-            if is_bad_candidate(c):
+            if c in cleaned:
                 continue
 
             cleaned.append(c)
 
-        # Önce desteklenen ara domain olmayan gerçek hedefleri seç.
         for c in cleaned:
             h = host_of(c)
 
             if h not in SUPPORTED_HOSTS:
                 return c
 
-        # Eğer sadece desteklenen ara linkler kaldıysa sonuncuyu dön.
         if cleaned:
             return cleaned[-1]
 
         raise RuntimeError("bildirim ara sayfasında gerçek link bulunamadı.")
-        
+
     def resolve_ouo(self, url):
         parsed = urllib.parse.urlparse(url)
         base = f"{parsed.scheme}://{parsed.netloc}"
@@ -280,7 +301,7 @@ class Resolver:
             if loc:
                 loc = clean_url(urllib.parse.urljoin(u, loc))
 
-                if host_of(loc) not in OUO_HOSTS:
+                if not is_static_asset_url(loc) and host_of(loc) not in OUO_HOSTS:
                     return loc
 
             for candidate in self.find_urls_in_text(body):
@@ -415,6 +436,9 @@ class Resolver:
 
                 if candidate:
                     candidate = clean_url(candidate)
+
+                    if is_static_asset_url(candidate):
+                        raise ValueError("static asset ignored")
 
                     if host_of(candidate) in BILDIRIM_HOSTS:
                         return self.resolve_bildirim(candidate)
