@@ -15,12 +15,21 @@ except Exception:
     certifi = None
 
 
+VERSION = "V1.3-app-force-ssl-bypass"
+
+
+def make_unverified_context(*args, **kwargs):
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    return ctx
+
+
 # Android APK içinde Python bazen CA sertifika zincirini bulamıyor.
-# Bu araç sadece link çözme amacıyla kullanıldığı için SSL doğrulamasını global kapatıyoruz.
+# Bu yüzden bu araçta SSL doğrulamasını global olarak kapatıyoruz.
 ssl._create_default_https_context = ssl._create_unverified_context
+ssl.create_default_context = make_unverified_context
 
-
-VERSION = "V1.2-app-ssl-bypass"
 
 SUPPORTED_HOSTS = {
     "ay.live",
@@ -47,8 +56,10 @@ def host_of(url):
     try:
         host = urllib.parse.urlparse(url).netloc.lower()
         host = host.split("@")[-1].split(":")[0]
+
         if host.startswith("www."):
             host = host[4:]
+
         return host
     except Exception:
         return ""
@@ -57,6 +68,7 @@ def host_of(url):
 def b64_try_decode(s):
     s = str(s).strip()
     s += "=" * (-len(s) % 4)
+
     try:
         return base64.b64decode(s).decode("utf-8", "ignore")
     except Exception:
@@ -67,13 +79,16 @@ class Resolver:
     def __init__(self):
         self.cj = CookieJar()
 
-        # Kesin çözüm: Bu context sertifika doğrulamaz.
-        self.ssl_context = ssl._create_unverified_context()
+        self.ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        self.ssl_context.check_hostname = False
+        self.ssl_context.verify_mode = ssl.CERT_NONE
 
         self.opener = urllib.request.build_opener(
             urllib.request.HTTPCookieProcessor(self.cj),
             urllib.request.HTTPSHandler(context=self.ssl_context),
         )
+
+        urllib.request.install_opener(self.opener)
 
     def request(self, url, data=None, headers=None, method=None, timeout=35, allow_redirects=True):
         if headers is None:
@@ -88,6 +103,7 @@ class Resolver:
             "Accept-Language": "tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7",
             "Connection": "close",
         }
+
         default_headers.update(headers)
 
         if isinstance(data, dict):
@@ -124,12 +140,14 @@ class Resolver:
 
         for u in URL_RE.findall(text):
             u = clean_url(u)
+
             if u not in out:
                 out.append(u)
 
         for m in re.findall(r"decodeURIComponent\(['\"]([^'\"]+)['\"]\)", text, re.I):
             try:
                 u = clean_url(urllib.parse.unquote(m))
+
                 if u.startswith("http") and u not in out:
                     out.append(u)
             except Exception:
@@ -137,6 +155,7 @@ class Resolver:
 
         for m in re.findall(r"atob\(['\"]([^'\"]+)['\"]\)", text, re.I):
             u = clean_url(b64_try_decode(m))
+
             if u.startswith("http") and u not in out:
                 out.append(u)
 
@@ -167,11 +186,13 @@ class Resolver:
         for pat in patterns:
             for m in re.findall(pat, body or "", re.I):
                 m = clean_url(m)
+
                 if m.startswith("http") and m not in candidates:
                     candidates.append(m)
 
         for c in candidates:
             h = host_of(c)
+
             if h not in SUPPORTED_HOSTS:
                 return c
 
@@ -198,8 +219,10 @@ class Resolver:
             got_url, status, headers, body = self.request(u, allow_redirects=False)
 
             loc = headers.get("Location") or headers.get("location")
+
             if loc:
                 loc = clean_url(urllib.parse.urljoin(u, loc))
+
                 if host_of(loc) not in OUO_HOSTS:
                     return loc
 
@@ -219,8 +242,10 @@ class Resolver:
         def find_one(patterns):
             for p in patterns:
                 m = re.search(p, body or "", re.I)
+
                 if m:
                     return html.unescape(m.group(1))
+
             return ""
 
         alias = find_one([
@@ -261,6 +286,7 @@ class Resolver:
 
             if alias:
                 tk_payload["alias"] = alias
+
             if csrf:
                 tk_payload["_csrfToken"] = csrf
 
@@ -292,14 +318,19 @@ class Resolver:
 
         if alias:
             go_payload["alias"] = alias
+
         if csrf:
             go_payload["_csrfToken"] = csrf
+
         if visitor_token:
             go_payload["visitor_token"] = visitor_token
+
         if a_val:
             go_payload["_a"] = a_val
+
         if t_val:
             go_payload["_t"] = t_val
+
         if d_val:
             go_payload["_d"] = d_val
 
