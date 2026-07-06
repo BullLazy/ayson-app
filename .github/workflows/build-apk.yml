@@ -47,22 +47,12 @@ jobs:
           python3 -m pip install --upgrade pip
           python3 -m pip install buildozer cython
 
-      - name: Restore release keystore
+      - name: Build debug APK
         run: |
-          printf '%s' "${{ secrets.P4A_RELEASE_KEYSTORE_BASE64 }}" | tr -d '\n\r ' | base64 --decode > ayson-release.keystore
-          ls -lh ayson-release.keystore
-
-      - name: Build release APK
-        env:
-          P4A_RELEASE_KEYSTORE: ${{ github.workspace }}/ayson-release.keystore
-          P4A_RELEASE_KEYALIAS: ${{ secrets.P4A_RELEASE_KEYALIAS }}
-          P4A_RELEASE_KEYSTORE_PASSWD: ${{ secrets.P4A_RELEASE_KEYSTORE_PASSWD }}
-          P4A_RELEASE_KEYALIAS_PASSWD: ${{ secrets.P4A_RELEASE_KEYALIAS_PASSWD }}
-        run: |
-          buildozer -v android release
+          buildozer -v android debug
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ayson-v21-release-apk
+          name: ayson-debug-apk
           path: bin/*.apk
