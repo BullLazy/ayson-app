@@ -18,6 +18,19 @@ from kivy.uix.popup import Popup
 from kivy.uix.scrollview import ScrollView
 from kivy.uix.textinput import TextInput
 
+try:
+    from android.runnable import run_on_ui_thread  # type: ignore
+    from jnius import PythonJavaClass, autoclass, java_method  # type: ignore
+except Exception:
+    run_on_ui_thread = None
+    PythonJavaClass = object
+    autoclass = None
+
+    def java_method(*_args, **_kwargs):
+        def deco(func):
+            return func
+        return deco
+
 from ayson_core import VERSION, resolve_url
 
 
@@ -35,6 +48,58 @@ WARNING = (1.000, 0.710, 0.250, 1)
 DANGER = (0.900, 0.250, 0.250, 1)
 
 HISTORY_LIMIT = 50
+
+SHORTENER_HOSTS = {
+    "ay.live", "aylink.co", "cpmlink.co", "cpmlink.pro",
+    "bildirim.online", "bildirim.vip", "ouo.io", "ouo.press",
+    "lnk.news", "tulink.fun", "bit.ly", "bitly.com", "tinyurl.com",
+    "is.gd", "v.gd", "t.co", "lnkd.in", "goo.gl", "ow.ly",
+    "buff.ly", "rebrand.ly", "rb.gy", "shorturl.at", "cutt.ly",
+    "s.id", "tiny.cc", "short.io", "adf.ly", "bc.vc", "shorte.st",
+    "clk.sh", "shrinke.me", "exe.io", "exey.io", "fc.lc",
+    "fc-lc.xyz", "linkvertise.com",
+}
+
+
+def simple_host(url):
+    try:
+        import urllib.parse
+        h = urllib.parse.urlparse(url or "").hostname or ""
+        h = h.lower()
+        if h.startswith("www."):
+            h = h[4:]
+        return h
+    except Exception:
+        return ""
+
+
+def looks_like_final_url(url):
+    h = simple_host(url)
+    if not h:
+        return False
+    if h in SHORTENER_HOSTS:
+        return False
+    low = (url or "").lower()
+    bad = ("captcha", "challenge", "cloudflare", "turnstile", "recaptcha")
+    if any(x in low for x in bad):
+        return False
+    return url.startswith("http://") or url.startswith("https://")
+
+
+class AndroidClickListener(PythonJavaClass):
+    __javainterfaces__ = ["android/view/View$OnClickListener"]
+    __javacontext__ = "app"
+
+    def __init__(self, callback):
+        super().__init__()
+        self.callback = callback
+
+    @java_method("(Landroid/view/View;)V")
+    def onClick(self, view):
+        try:
+            self.callback()
+        except Exception:
+            pass
 
 
 class RoundedBox(BoxLayout):
@@ -152,7 +217,7 @@ class ModernInput(TextInput):
         self.hint_text_color = MUTED
         self.cursor_color = ACCENT
         self.selection_color = (0.365, 0.455, 1.0, 0.35)
-        self.padding = [dp(16), dp(15), dp(16), dp(15)]
+                self.padding = [dp(16), dp(15), dp(16), dp(15)]
         self.font_size = dp(15)
         self.multiline = False
         self.size_hint_y = None
@@ -184,16 +249,25 @@ class AysonApp(App):
         self.open_target = ""
         self.history = []
         self.history_query = ""
+        self.web_overlay = None
+        self.webview = None
+        self.webview_target = ""
+        self._web_poll_event = None
         self.store = JsonStore("ayson_history.json")
         self._load_history()
 
         root = BoxLayout(orientation="vertical", padding=dp(18), spacing=dp(14))
         with root.canvas.before:
             Color(*BG)
-            self._root_bg = RoundedRectangle(pos=root.pos, size=root.size, radius=[0])
-        root.bind(pos=self._update_root_bg, size=self._update_root_bg)
+            root._bg = RoundedRectangle(pos=root.pos, size=root.size, radius=[0])
+        root.bind(
+            pos=lambda w, *_: setattr(w._bg, "pos", w.pos),
+            size=lambda w, *_: setattr(w._bg, "size", w.size),
+        )
 
-        header = BoxLayout(orientation="horizontal", size_hint_y=None, height=dp(80), spacing=dp(12))
+        header = BoxLayout(orientation="horizontal", size_hint_y=None, height=dp(62), spacing=dp(12))
+
+        title_box = BoxLayout(orientation="vertical", spacing=dp(1))
         title = Label(
             text="Ayson",
             color=TEXT,
@@ -201,238 +275,236 @@ class AysonApp(App):
             font_size=dp(31),
             halign="left",
             valign="middle",
+            size_hint_y=1,
         )
         title.bind(size=lambda inst, *_: setattr(inst, "text_size", inst.size))
-        menu_btn = MenuButton()
-        menu_btn.bind(on_press=self.open_history_popup)
-        header.add_widget(title)
-        header.add_widget(menu_btn)
+        title_box.add_widget(title)
 
-        card = RoundedBox(orientation="vertical", padding=dp(14), spacing=dp(12), size_hint_y=None, height=dp(184))
-        input_label = Label(
-            text="Kisa linki yapistir",
-            color=TEXT,
-            bold=True,
-            font_size=dp(15),
+        menu = MenuButton()
+        menu.bind(on_release=lambda *_: self.show_history())
+
+        header.add_widget(title_box)
+        header.add_widget(menu)
+        root.add_widget(header)
+
+        card = RoundedBox(orientation="vertical", padding=dp(14), spacing=dp(12), size_hint_y=None, height=dp(190))
+        self.url_input = ModernInput(hint_text="Linki buraya yapıştır")
+        card.add_widget(self.url_input)
+
+        row = BoxLayout(orientation="horizontal", spacing=dp(10), size_hint_y=None, height=dp(52))
+        self.solve_btn = PillButton(text="Çöz")
+        paste_btn = GhostButton(text="Yapıştır")
+        self.solve_btn.bind(on_release=lambda *_: self.solve())
+        paste_btn.bind(on_release=lambda *_: self.paste_clipboard())
+        row.add_widget(self.solve_btn)
+        row.add_widget(paste_btn)
+        card.add_widget(row)
+
+        self.status_label = Label(
+            text="Hazır",
+            color=MUTED,
+            font_size=dp(13),
             halign="left",
+            valign="middle",
             size_hint_y=None,
             height=dp(24),
         )
-        input_label.bind(size=lambda inst, *_: setattr(inst, "text_size", inst.size))
+        self.status_label.bind(size=lambda inst, *_: setattr(inst, "text_size", inst.size))
+        card.add_widget(self.status_label)
+        root.add_widget(card)
 
-        self.input = ModernInput(hint_text="Linki buraya yapistir")
-
-        buttons = BoxLayout(orientation="horizontal", spacing=dp(10), size_hint_y=None, height=dp(52))
-        self.solve_btn = PillButton(text="Coz")
-        self.solve_btn.bind(on_press=self.on_solve)
-        paste_btn = GhostButton(text="Yapistir")
-        paste_btn.bind(on_press=self.on_paste)
-        buttons.add_widget(self.solve_btn)
-        buttons.add_widget(paste_btn)
-
-        card.add_widget(input_label)
-        card.add_widget(self.input)
-        card.add_widget(buttons)
-
-        result_card = RoundedBox(orientation="vertical", padding=dp(14), spacing=dp(10), bg_color=(0.070, 0.075, 0.105, 1))
-        result_top = BoxLayout(orientation="horizontal", spacing=dp(8), size_hint_y=None, height=dp(42))
-        self.status = Label(
-            text="Hazir",
-            color=SUCCESS,
+        result_card = RoundedBox(orientation="vertical", padding=dp(14), spacing=dp(10))
+        result_top = BoxLayout(orientation="horizontal", size_hint_y=None, height=dp(30))
+        result_title = Label(
+            text="Sonuç",
+            color=TEXT,
             bold=True,
-            font_size=dp(14),
+            font_size=dp(17),
             halign="left",
             valign="middle",
         )
-        self.status.bind(size=lambda inst, *_: setattr(inst, "text_size", inst.size))
-        self.open_btn = GhostButton(text="Ac", size_hint_x=None, width=dp(76), height=dp(42))
-        self.open_btn.font_size = dp(13)
-        self.open_btn.opacity = 0
-        self.open_btn.disabled = True
-        self.open_btn.bind(on_press=self.on_open_current)
-        self.copy_btn = GhostButton(text="Kopyala", size_hint_x=None, width=dp(104), height=dp(42))
-        self.copy_btn.font_size = dp(13)
-        self.copy_btn.bind(on_press=self.on_copy)
-        result_top.add_widget(self.status)
-        result_top.add_widget(self.open_btn)
-        result_top.add_widget(self.copy_btn)
-
-        scroll = ScrollView(do_scroll_x=False, do_scroll_y=True)
-        self.output = OutputBox(text="Sonuc burada gorunecek.")
-        scroll.add_widget(self.output)
-        self.output.bind(minimum_height=self.output.setter("height"))
-
+        result_title.bind(size=lambda inst, *_: setattr(inst, "text_size", inst.size))
+        result_top.add_widget(result_title)
         result_card.add_widget(result_top)
-        result_card.add_widget(scroll)
+
+        out_wrap = RoundedBox(orientation="vertical", bg_color=(0.060, 0.064, 0.090, 1), border_color=(0.130, 0.145, 0.200, 1))
+        self.output = OutputBox(hint_text="Çözülen link burada görünür")
+        out_wrap.add_widget(self.output)
+        result_card.add_widget(out_wrap)
+
+        action_row = BoxLayout(orientation="horizontal", spacing=dp(10), size_hint_y=None, height=dp(52))
+        copy_btn = GhostButton(text="Kopyala")
+        self.open_btn = GhostButton(text="Aç")
+        self.inner_open_btn = GhostButton(text="İç Aç")
+        copy_btn.bind(on_release=lambda *_: self.copy_result())
+        self.open_btn.bind(on_release=lambda *_: self.open_current())
+        self.inner_open_btn.bind(on_release=lambda *_: self.open_current_inside())
+        action_row.add_widget(copy_btn)
+        action_row.add_widget(self.open_btn)
+        action_row.add_widget(self.inner_open_btn)
+        result_card.add_widget(action_row)
+
+        root.add_widget(result_card)
 
         footer = Label(
             text="Made By Black Corp.",
             color=MUTED,
-            bold=True,
             font_size=dp(12),
             size_hint_y=None,
-            height=dp(28),
+            height=dp(24),
             halign="center",
+            valign="middle",
         )
         footer.bind(size=lambda inst, *_: setattr(inst, "text_size", inst.size))
-
-        root.add_widget(header)
-        root.add_widget(card)
-        root.add_widget(result_card)
         root.add_widget(footer)
+
+        self.root = root
+        Clock.schedule_once(lambda *_: self.read_shared_text(), 0.7)
         return root
 
-    def on_start(self):
-        self.bind_android_share_intent()
-        Clock.schedule_once(lambda _dt: self.read_android_intent(), 0.2)
+    def set_status(self, text, color=MUTED):
+        self.status_label.text = text
+        self.status_label.color = color
 
-    def _update_root_bg(self, root, *_):
-        self._root_bg.pos = root.pos
-        self._root_bg.size = root.size
-
-    def set_status(self, text, color):
-        self.status.text = text
-        self.status.color = color
-
-    def set_open_button(self, target):
-        self.open_target = (target or "").strip()
-        active = bool(self.open_target)
-        self.open_btn.disabled = not active
-        self.open_btn.opacity = 1 if active else 0
-
-    def bind_android_share_intent(self):
+    def paste_clipboard(self):
         try:
-            from android import activity  # type: ignore
-            activity.bind(on_new_intent=self.on_new_android_intent)
+            self.url_input.text = Clipboard.paste() or ""
+            self.set_status("Panodan alındı", SUCCESS)
         except Exception:
-            pass
+            self.set_status("Pano okunamadı", ERROR)
 
-    def on_new_android_intent(self, intent):
-        self.read_android_intent(intent)
-
-    def read_android_intent(self, intent=None):
-        try:
-            from jnius import autoclass  # type: ignore
-            Intent = autoclass("android.content.Intent")
-            PythonActivity = autoclass("org.kivy.android.PythonActivity")
-            if intent is None:
-                intent = PythonActivity.mActivity.getIntent()
-            text = ""
-            action = intent.getAction()
-            if action == Intent.ACTION_SEND:
-                extra = intent.getStringExtra(Intent.EXTRA_TEXT)
-                if extra:
-                    text = str(extra).strip()
-            elif action == Intent.ACTION_VIEW:
-                data = intent.getDataString()
-                if data:
-                    text = str(data).strip()
-            if text:
-                self.input.text = self.extract_first_url(text) or text
-                self.set_status("Paylasimdan alindi", SUCCESS)
-        except Exception:
-            pass
-
-    def extract_first_url(self, text):
+    def copy_result(self):
+        text = (self.output.text or "").strip()
         if not text:
-            return ""
-        for part in text.replace("\n", " ").split():
-            cleaned = part.strip().strip("'\"<>()[]{}")
-            if cleaned.startswith("http://") or cleaned.startswith("https://"):
-                return cleaned
-        return ""
-
-    def on_paste(self, *_):
+            self.set_status("Kopyalanacak sonuç yok", WARNING)
+            return
         try:
-            text = Clipboard.paste().strip()
+            Clipboard.copy(text)
+            self.set_status("Kopyalandı", SUCCESS)
         except Exception:
-            text = ""
-        if text:
-            self.input.text = self.extract_first_url(text) or text
-            self.set_status("Yapistirildi", SUCCESS)
-        else:
-            self.set_status("Panoda link yok", WARNING)
+            self.set_status("Kopyalanamadı", ERROR)
 
-    def on_solve(self, *_):
+    def open_current(self):
+        target = self.open_target or self.last_result or self.last_input or (self.url_input.text or "").strip()
+        if not target:
+            self.set_status("Açılacak link yok", WARNING)
+            return
+        try:
+            webbrowser.open(target)
+            self.set_status("Tarayıcıda açılıyor", SUCCESS)
+        except Exception:
+            self.set_status("Tarayıcı açılamadı", ERROR)
+
+    def open_current_inside(self):
+        target = self.open_target or self.last_result or self.last_input or (self.url_input.text or "").strip()
+        if not target:
+            self.set_status("İçeride açılacak link yok", WARNING)
+            return
+        self.open_webview(target)
+        def solve(self):
         if self.is_solving:
             return
-        url = self.input.text.strip()
+
+        url = (self.url_input.text or "").strip()
         if not url:
-            self.output.text = "Link girmen lazim."
-            self.set_status("Link bekleniyor", WARNING)
-            self.set_open_button("")
+            self.set_status("Önce link gir", WARNING)
             return
 
         self.is_solving = True
+        self.solve_btn.disabled = True
         self.last_input = url
-        self.solve_btn.text = "Cozuluyor..."
-        self.output.text = "Cozuluyor...\n\n" + url
-        self.set_status("Cozuluyor", WARNING)
-        self.set_open_button("")
-
-        thread = threading.Thread(target=self._solve_worker, args=(url,), daemon=True)
-        thread.start()
-
-    def _solve_worker(self, url):
-        try:
-            final = resolve_url(url)
-            Clock.schedule_once(lambda _dt, f=final: self._show_success(f), 0)
-        except Exception as exc:
-            message = str(exc)
-            Clock.schedule_once(lambda _dt, m=message, u=url: self._show_error(m, u), 0)
-
-    def _show_success(self, final):
-        self.is_solving = False
-        self.solve_btn.text = "Coz"
-        self.last_result = final.strip()
-        self.output.text = self.last_result
-        self.set_status("Cozuldu", SUCCESS)
-        self.set_open_button(self.last_result)
-        self._add_history(self.last_input, self.last_result, "success")
-
-    def _show_error(self, message, source_url):
-        self.is_solving = False
-        self.solve_btn.text = "Coz"
         self.last_result = ""
-        msg_low = (message or "").lower()
-        captcha = "captcha" in msg_low or "turnstile" in msg_low or "recaptcha" in msg_low
-        if captcha:
-            self.output.text = "Bu link CAPTCHA/dogrulama istiyor.\n\nUygulama yanlis link vermedi. Tarayicida acip devam edebilirsin.\n\n" + source_url
-            self.set_status("CAPTCHA gerekiyor", WARNING)
-            self.set_open_button(source_url)
-            self._add_history(source_url, source_url, "captcha")
-        else:
-            self.output.text = "Hata:\n" + message + "\n\nSurum:\n" + VERSION
-            self.set_status("Hata", ERROR)
-            self.set_open_button("")
+        self.open_target = url
+        self.output.text = ""
+        self.set_status("Çözülüyor...", ACCENT)
 
-    def on_copy(self, *_):
-        text = self.last_result or self.output.text.strip()
-        if not text or text.startswith("Hata") or "Sonuc burada" in text or text.startswith("Cozuluyor"):
-            self.set_status("Kopyalanacak sonuc yok", WARNING)
-            return
-        Clipboard.copy(text)
-        self.set_status("Kopyalandi", SUCCESS)
+        threading.Thread(target=self._solve_thread, args=(url,), daemon=True).start()
 
-    def on_open_current(self, *_):
-        self.open_url(self.open_target)
-
-    def open_url(self, url):
-        url = (url or "").strip()
-        if not url:
-            self.set_status("Acilacak link yok", WARNING)
-            return
+    def _solve_thread(self, url):
         try:
-            webbrowser.open(url)
-            self.set_status("Tarayici acildi", SUCCESS)
+            result = resolve_url(url)
+            Clock.schedule_once(lambda *_: self._solve_success(url, result), 0)
         except Exception as exc:
-            self.set_status("Acma hatasi", ERROR)
-            self.output.text = "Tarayici acilamadi:\n" + str(exc)
+            msg = str(exc)
+            Clock.schedule_once(lambda *_: self._solve_error(url, msg), 0)
+
+    def _solve_success(self, input_url, result):
+        self.is_solving = False
+        self.solve_btn.disabled = False
+
+        result = (result or "").strip()
+        self.last_result = result
+        self.open_target = result or input_url
+
+        self.output.text = result
+        self.set_status("Çözüldü", SUCCESS)
+
+        try:
+            Clipboard.copy(result)
+        except Exception:
+            pass
+
+        self._add_history(
+            input_url=input_url,
+            result_url=result,
+            status="success",
+            note="Çözüldü",
+        )
+
+    def _solve_error(self, input_url, msg):
+        self.is_solving = False
+        self.solve_btn.disabled = False
+
+        self.last_result = ""
+        self.open_target = input_url
+
+        clean_msg = msg or "Bilinmeyen hata"
+
+        if self._is_manual_needed(clean_msg):
+            text = (
+                "Bu link CAPTCHA/dogrulama istiyor.\n\n"
+                "Uygulama yanlis link vermedi. Tarayicida veya ic tarayicida acip devam edebilirsin.\n\n"
+                f"{input_url}"
+            )
+            self.output.text = text
+            self.set_status("Manuel doğrulama gerekli", WARNING)
+            self._add_history(
+                input_url=input_url,
+                result_url=input_url,
+                status="manual",
+                note="Manuel doğrulama gerekli",
+            )
+        else:
+            self.output.text = "Hata:\n" + clean_msg + "\n\nSurum:\n" + VERSION
+            self.set_status("Hata", ERROR)
+            self._add_history(
+                input_url=input_url,
+                result_url=input_url,
+                status="error",
+                note=clean_msg[:180],
+            )
+
+    def _is_manual_needed(self, msg):
+        low = (msg or "").lower()
+        markers = (
+            "captcha",
+            "doğrulama",
+            "dogrulama",
+            "anti-bot",
+            "turnstile",
+            "cloudflare",
+            "i'm a human",
+            "human",
+            "tarayıcıda aç",
+            "tarayicida ac",
+            "koruma",
+        )
+        return any(x in low for x in markers)
 
     def _load_history(self):
         try:
             if self.store.exists("items"):
-                self.history = self.store.get("items").get("value", [])
+                self.history = self.store.get("items").get("data", [])
             else:
                 self.history = []
         except Exception:
@@ -440,256 +512,720 @@ class AysonApp(App):
 
     def _save_history(self):
         try:
-            self.store.put("items", value=self.history[:HISTORY_LIMIT])
+            self.store.put("items", data=self.history[:HISTORY_LIMIT])
         except Exception:
             pass
 
-    def _add_history(self, source, result, status):
-        item = {
-            "source": (source or "").strip(),
-            "result": (result or "").strip(),
-            "status": status,
-            "tag": "",
-            "time": datetime.now().strftime("%d.%m.%Y %H:%M"),
-        }
-        if not item["result"]:
+    def _add_history(self, input_url, result_url, status="success", note=""):
+        if not input_url and not result_url:
             return
-        old_tag = ""
+
+        item = {
+            "input": input_url or "",
+            "result": result_url or "",
+            "status": status or "",
+            "note": note or "",
+            "tag": "",
+            "date": datetime.now().strftime("%Y-%m-%d %H:%M"),
+        }
+
+        # Aynı sonucu tekrar en üste taşı
+        new_history = []
         for old in self.history:
-            if old.get("result") == item["result"]:
-                old_tag = old.get("tag", "")
-                break
-        item["tag"] = old_tag
-        self.history = [x for x in self.history if x.get("result") != item["result"]]
-        self.history.insert(0, item)
+            if old.get("input") == item["input"] and old.get("result") == item["result"]:
+                item["tag"] = old.get("tag", "")
+                continue
+            new_history.append(old)
+
+        self.history = [item] + new_history
         self.history = self.history[:HISTORY_LIMIT]
         self._save_history()
 
-    def clear_history(self, *_):
-        self.history = []
-        self._save_history()
-        self.refresh_history_list()
+    def read_shared_text(self):
+        if autoclass is None:
+            return
 
-    def delete_history_item(self, item):
-        result = item.get("result", "")
-        self.history = [x for x in self.history if x.get("result") != result]
-        self._save_history()
-        self.refresh_history_list()
-        self.set_status("Gecmisten silindi", SUCCESS)
+        try:
+            PythonActivity = autoclass("org.kivy.android.PythonActivity")
+            Intent = autoclass("android.content.Intent")
+            activity = PythonActivity.mActivity
+            intent = activity.getIntent()
 
-    def open_history_popup(self, *_):
-        if hasattr(self, "history_popup") and self.history_popup:
-            try:
-                self.history_popup.dismiss()
-            except Exception:
-                pass
+            if intent is None:
+                return
 
-        body = BoxLayout(orientation="vertical", padding=dp(12), spacing=dp(10))
-        top = BoxLayout(orientation="horizontal", size_hint_y=None, height=dp(42), spacing=dp(8))
-        title = Label(text="Gecmis", color=TEXT, bold=True, font_size=dp(18), halign="left", valign="middle")
-        title.bind(size=lambda inst, *_: setattr(inst, "text_size", inst.size))
-        clear_btn = GhostButton(text="Temizle", size_hint_x=None, width=dp(96), height=dp(42))
-        clear_btn.font_size = dp(12)
-        clear_btn.bind(on_press=self.clear_history)
-        top.add_widget(title)
-        top.add_widget(clear_btn)
-        body.add_widget(top)
+            action = intent.getAction()
+            shared_text = ""
 
-        self.history_search = ModernInput(hint_text="Gecmiste ara: link veya etiket")
-        self.history_search.text = self.history_query
-        self.history_search.bind(text=self.on_history_search)
-        body.add_widget(self.history_search)
+            if action == Intent.ACTION_SEND:
+                shared_text = intent.getStringExtra(Intent.EXTRA_TEXT) or ""
+            elif action == Intent.ACTION_VIEW:
+                data = intent.getData()
+                if data:
+                    shared_text = data.toString()
 
-        scroll = ScrollView(do_scroll_x=False, do_scroll_y=True)
-        self.history_items_box = BoxLayout(orientation="vertical", spacing=dp(10), size_hint_y=None)
-        self.history_items_box.bind(minimum_height=self.history_items_box.setter("height"))
-        scroll.add_widget(self.history_items_box)
-        body.add_widget(scroll)
+            shared_text = (shared_text or "").strip()
+            if shared_text.startswith("http://") or shared_text.startswith("https://"):
+                self.url_input.text = shared_text
+                self.set_status("Paylaşılan link alındı", SUCCESS)
+        except Exception:
+            pass
 
-        self.history_popup = Popup(
-            title="",
-            content=body,
-            size_hint=(0.92, 0.82),
-            background="",
-            background_color=(0.050, 0.052, 0.074, 1),
-            separator_height=0,
+    def show_history(self):
+        popup_root = BoxLayout(orientation="vertical", padding=dp(14), spacing=dp(10))
+
+        with popup_root.canvas.before:
+            Color(*BG)
+            popup_root._bg = RoundedRectangle(pos=popup_root.pos, size=popup_root.size, radius=[dp(18)])
+        popup_root.bind(
+            pos=lambda w, *_: setattr(w._bg, "pos", w.pos),
+            size=lambda w, *_: setattr(w._bg, "size", w.size),
         )
-        self.refresh_history_list()
-        self.history_popup.open()
 
-    def on_history_search(self, instance, value):
-        self.history_query = value or ""
-        self.refresh_history_list()
+        top = BoxLayout(orientation="horizontal", size_hint_y=None, height=dp(48), spacing=dp(10))
 
-    def filtered_history(self):
-        q = (self.history_query or "").strip().lower()
-        if not q:
-            return list(self.history)
-        out = []
-        for item in self.history:
-            haystack = " ".join([
-                item.get("source", ""),
-                item.get("result", ""),
-                item.get("tag", ""),
-                item.get("status", ""),
-                item.get("time", ""),
-            ]).lower()
-            if q in haystack:
-                out.append(item)
-        return out
-
-    def refresh_history_list(self):
-        box = getattr(self, "history_items_box", None)
-        if not box:
-            return
-        box.clear_widgets()
-        items = self.filtered_history()
-        if not self.history:
-            empty = Label(text="Henuz gecmis yok.", color=MUTED, font_size=dp(14), size_hint_y=None, height=dp(70))
-            box.add_widget(empty)
-            return
-        if not items:
-            empty = Label(text="Aramana uygun sonuc yok.", color=MUTED, font_size=dp(14), size_hint_y=None, height=dp(70))
-            box.add_widget(empty)
-            return
-        for item in items:
-            box.add_widget(self._history_row(item))
-
-    def _history_row(self, item):
-        row = RoundedBox(orientation="vertical", padding=dp(10), spacing=dp(8), size_hint_y=None, height=dp(184), bg_color=CARD)
-        status = item.get("status", "success")
-        label_text = "CAPTCHA - tarayicida ac" if status == "captcha" else "Sonuc link"
-        tag_text = (item.get("tag") or "").strip()
-
-        head = BoxLayout(orientation="horizontal", spacing=dp(8), size_hint_y=None, height=dp(26))
-        head_label = Label(
-            text=f"{label_text}  •  {item.get('time', '')}",
-            color=WARNING if status == "captcha" else SUCCESS,
+        title = Label(
+            text="Geçmiş",
+            color=TEXT,
             bold=True,
-            font_size=dp(12),
+            font_size=dp(22),
             halign="left",
             valign="middle",
         )
-        head_label.bind(size=lambda inst, *_: setattr(inst, "text_size", inst.size))
-        del_btn = DangerButton(text="Sil", size_hint_x=None, width=dp(54), height=dp(26))
-        del_btn.font_size = dp(10)
-        del_btn.bind(on_press=lambda *_args, it=item: self.delete_history_item(it))
-        head.add_widget(head_label)
-        head.add_widget(del_btn)
+        title.bind(size=lambda inst, *_: setattr(inst, "text_size", inst.size))
 
-        result_text = item.get("result", "")
-        result = Label(
-            text=result_text,
+        close_btn = GhostButton(text="Kapat")
+        close_btn.size_hint_x = None
+        close_btn.width = dp(100)
+
+        top.add_widget(title)
+        top.add_widget(close_btn)
+        popup_root.add_widget(top)
+
+        search = ModernInput(hint_text="Geçmişte ara / etiket ara")
+        search.height = dp(52)
+        popup_root.add_widget(search)
+
+        scroll = ScrollView()
+        list_box = BoxLayout(orientation="vertical", spacing=dp(10), size_hint_y=None)
+        list_box.bind(minimum_height=list_box.setter("height"))
+        scroll.add_widget(list_box)
+        popup_root.add_widget(scroll)
+
+        popup = Popup(
+            title="",
+            content=popup_root,
+            size_hint=(0.94, 0.88),
+            background="",
+            background_color=(0, 0, 0, 0),
+            separator_height=0,
+        )
+
+        close_btn.bind(on_release=lambda *_: popup.dismiss())
+
+        def refresh(*_):
+            q = (search.text or "").strip().lower()
+            list_box.clear_widgets()
+
+            items = self.history or []
+            if q:
+                filtered = []
+                for item in items:
+                    hay = " ".join(
+                        [
+                            item.get("input", ""),
+                            item.get("result", ""),
+                            item.get("status", ""),
+                            item.get("note", ""),
+                            item.get("tag", ""),
+                            item.get("date", ""),
+                        ]
+                    ).lower()
+                    if q in hay:
+                        filtered.append(item)
+                items = filtered
+
+            if not items:
+                empty = Label(
+                    text="Geçmiş boş",
+                    color=MUTED,
+                    font_size=dp(15),
+                    size_hint_y=None,
+                    height=dp(80),
+                )
+                list_box.add_widget(empty)
+                return
+
+            for index, item in enumerate(items):
+                list_box.add_widget(self._history_card(item, popup, refresh))
+
+        search.bind(text=refresh)
+        refresh()
+        
+        popup.open()
+            def _history_card(self, item, popup, refresh_callback):
+        card = RoundedBox(
+            orientation="vertical",
+            padding=dp(10),
+            spacing=dp(8),
+            size_hint_y=None,
+            height=dp(178),
+            bg_color=CARD,
+            border_color=BORDER,
+        )
+
+        status = item.get("status", "")
+        tag = item.get("tag", "")
+        date = item.get("date", "")
+
+        status_text = "Başarılı" if status == "success" else "Manuel" if status == "manual" else "Hata"
+        status_color = SUCCESS if status == "success" else WARNING if status == "manual" else ERROR
+
+        top = BoxLayout(orientation="horizontal", size_hint_y=None, height=dp(24), spacing=dp(8))
+
+        status_lbl = Label(
+            text=status_text,
+            color=status_color,
+            bold=True,
+            font_size=dp(13),
+            halign="left",
+            valign="middle",
+        )
+        status_lbl.bind(size=lambda inst, *_: setattr(inst, "text_size", inst.size))
+
+        date_lbl = Label(
+            text=date,
+            color=MUTED,
+            font_size=dp(12),
+            halign="right",
+            valign="middle",
+            size_hint_x=None,
+            width=dp(130),
+        )
+        date_lbl.bind(size=lambda inst, *_: setattr(inst, "text_size", inst.size))
+
+        top.add_widget(status_lbl)
+        top.add_widget(date_lbl)
+        card.add_widget(top)
+
+        result = item.get("result", "") or item.get("input", "")
+        input_url = item.get("input", "")
+
+        link_lbl = Label(
+            text=result,
             color=TEXT,
             font_size=dp(12),
-            size_hint_y=None,
-            height=dp(42),
             halign="left",
             valign="top",
             shorten=True,
-            shorten_from="right",
-        )
-        result.bind(size=lambda inst, *_: setattr(inst, "text_size", inst.size))
-
-        tag = Label(
-            text=("Etiket: " + tag_text) if tag_text else "Etiket yok",
-            color=ACCENT if tag_text else MUTED,
-            font_size=dp(11),
+            shorten_from="middle",
             size_hint_y=None,
-            height=dp(18),
+            height=dp(38),
+        )
+        link_lbl.bind(size=lambda inst, *_: setattr(inst, "text_size", inst.size))
+        card.add_widget(link_lbl)
+
+        meta_text = "Kaynak: " + input_url
+        if tag:
+            meta_text += "\nEtiket: " + tag
+
+        meta_lbl = Label(
+            text=meta_text,
+            color=MUTED,
+            font_size=dp(11),
+            halign="left",
+            valign="top",
+            shorten=True,
+            shorten_from="middle",
+            size_hint_y=None,
+            height=dp(38),
+        )
+        meta_lbl.bind(size=lambda inst, *_: setattr(inst, "text_size", inst.size))
+        card.add_widget(meta_lbl)
+
+        row = BoxLayout(orientation="horizontal", spacing=dp(8), size_hint_y=None, height=dp(42))
+
+        open_btn = GhostButton(text="Aç")
+        copy_btn = GhostButton(text="Kopyala")
+        inside_btn = GhostButton(text="İç Aç")
+        tag_btn = GhostButton(text="Etiket")
+        del_btn = DangerButton(text="Sil")
+
+        for b in (open_btn, copy_btn, inside_btn, tag_btn, del_btn):
+            b.font_size = dp(11)
+            b.height = dp(42)
+
+        open_btn.bind(on_release=lambda *_: self._open_history_item(item))
+        copy_btn.bind(on_release=lambda *_: self._copy_history_item(item))
+        inside_btn.bind(on_release=lambda *_: self.open_webview(item.get("result", "") or item.get("input", "")))
+        tag_btn.bind(on_release=lambda *_: self._edit_tag(item, refresh_callback))
+        del_btn.bind(on_release=lambda *_: self._delete_history_item(item, refresh_callback))
+
+        row.add_widget(open_btn)
+        row.add_widget(copy_btn)
+        row.add_widget(inside_btn)
+        row.add_widget(tag_btn)
+        row.add_widget(del_btn)
+
+        card.add_widget(row)
+        return card
+
+    def _open_history_item(self, item):
+        target = item.get("result", "") or item.get("input", "")
+        if not target:
+            return
+        try:
+            webbrowser.open(target)
+        except Exception:
+            pass
+
+    def _copy_history_item(self, item):
+        target = item.get("result", "") or item.get("input", "")
+        if not target:
+            return
+        try:
+            Clipboard.copy(target)
+            self.set_status("Geçmiş linki kopyalandı", SUCCESS)
+        except Exception:
+            self.set_status("Kopyalanamadı", ERROR)
+
+    def _delete_history_item(self, item, refresh_callback=None):
+        self.history = [
+            old for old in self.history
+            if not (
+                old.get("input") == item.get("input")
+                and old.get("result") == item.get("result")
+                and old.get("date") == item.get("date")
+            )
+        ]
+        self._save_history()
+        if refresh_callback:
+            refresh_callback()
+
+    def _edit_tag(self, item, refresh_callback=None):
+        root = BoxLayout(orientation="vertical", padding=dp(14), spacing=dp(12))
+
+        title = Label(
+            text="Etiket ekle / düzenle",
+            color=TEXT,
+            bold=True,
+            font_size=dp(19),
+            size_hint_y=None,
+            height=dp(34),
+        )
+        root.add_widget(title)
+
+        inp = ModernInput(hint_text="Örn: film, oyun, önemli")
+        inp.text = item.get("tag", "")
+        root.add_widget(inp)
+
+        row = BoxLayout(orientation="horizontal", spacing=dp(10), size_hint_y=None, height=dp(52))
+
+        save_btn = PillButton(text="Kaydet")
+        clear_btn = GhostButton(text="Sil")
+        cancel_btn = GhostButton(text="İptal")
+
+        row.add_widget(save_btn)
+        row.add_widget(clear_btn)
+        row.add_widget(cancel_btn)
+        root.add_widget(row)
+
+        popup = Popup(
+            title="",
+            content=root,
+            size_hint=(0.88, None),
+            height=dp(190),
+            background="",
+            background_color=(0.04, 0.045, 0.065, 1),
+            separator_height=0,
+        )
+
+        def apply_tag(value):
+            for old in self.history:
+                if (
+                    old.get("input") == item.get("input")
+                    and old.get("result") == item.get("result")
+                    and old.get("date") == item.get("date")
+                ):
+                    old["tag"] = value
+                    item["tag"] = value
+                    break
+            self._save_history()
+            popup.dismiss()
+            if refresh_callback:
+                refresh_callback()
+
+        save_btn.bind(on_release=lambda *_: apply_tag((inp.text or "").strip()))
+        clear_btn.bind(on_release=lambda *_: apply_tag(""))
+        cancel_btn.bind(on_release=lambda *_: popup.dismiss())
+
+        popup.open()
+
+    def open_webview(self, url):
+        url = (url or "").strip()
+        if not url:
+            self.set_status("İçeride açılacak link yok", WARNING)
+            return
+
+        if autoclass is None or run_on_ui_thread is None:
+            self.set_status("İç Aç sadece Android APK içinde çalışır", ERROR)
+            try:
+                webbrowser.open(url)
+            except Exception:
+                pass
+            return
+
+        self.webview_target = url
+        self.set_status("İç tarayıcı açılıyor", ACCENT)
+        self._show_web_overlay()
+        self._android_open_webview(url)
+
+    def _show_web_overlay(self):
+        if self.web_overlay is not None:
+            return
+
+        overlay = BoxLayout(orientation="vertical", spacing=dp(0))
+        with overlay.canvas.before:
+            Color(*BG)
+            overlay._bg = RoundedRectangle(pos=overlay.pos, size=overlay.size, radius=[0])
+        overlay.bind(
+            pos=lambda w, *_: setattr(w._bg, "pos", w.pos),
+            size=lambda w, *_: setattr(w._bg, "size", w.size),
+        )
+
+        top = BoxLayout(
+            orientation="horizontal",
+            padding=[dp(10), dp(8), dp(10), dp(8)],
+            spacing=dp(8),
+            size_hint_y=None,
+            height=dp(66),
+        )
+
+        close_btn = GhostButton(text="Kapat")
+        capture_btn = PillButton(text="Yakala")
+        open_external_btn = GhostButton(text="Tarayıcı")
+
+        close_btn.bind(on_release=lambda *_: self.close_webview())
+        capture_btn.bind(on_release=lambda *_: self.capture_webview_url())
+        open_external_btn.bind(on_release=lambda *_: self.open_webview_external())
+
+        top.add_widget(close_btn)
+        top.add_widget(capture_btn)
+        top.add_widget(open_external_btn)
+
+        self.web_status = Label(
+            text="Sayfa yükleniyor...",
+            color=MUTED,
+            font_size=dp(12),
             halign="left",
             valign="middle",
-            shorten=True,
-            shorten_from="right",
+            size_hint_y=None,
+            height=dp(34),
+            padding=[dp(12), 0],
         )
-        tag.bind(size=lambda inst, *_: setattr(inst, "text_size", inst.size))
+        self.web_status.bind(size=lambda inst, *_: setattr(inst, "text_size", inst.size))
 
-        buttons = BoxLayout(orientation="horizontal", spacing=dp(8), size_hint_y=None, height=dp(42))
-        open_btn = GhostButton(text="Ac", height=dp(42))
-        open_btn.font_size = dp(12)
-        copy_btn = GhostButton(text="Kopyala", height=dp(42))
-        copy_btn.font_size = dp(12)
-        tag_btn = GhostButton(text="Etiket", height=dp(42))
-        tag_btn.font_size = dp(12)
-        open_btn.bind(on_press=lambda *_args, u=result_text: self.open_url(u))
-        copy_btn.bind(on_press=lambda *_args, u=result_text: self.copy_history_url(u))
-        tag_btn.bind(on_press=lambda *_args, it=item: self.open_tag_popup(it))
-        buttons.add_widget(open_btn)
-        buttons.add_widget(copy_btn)
-        buttons.add_widget(tag_btn)
+        placeholder = Label(
+            text="Android WebView alanı\n\nYeşil bar / doğrulama / Linke Git işlemlerini burada manuel yap.",
+            color=MUTED,
+            font_size=dp(15),
+            halign="center",
+            valign="middle",
+        )
+        placeholder.bind(size=lambda inst, *_: setattr(inst, "text_size", inst.size))
 
-        row.add_widget(head)
-        row.add_widget(result)
-        row.add_widget(tag)
-        row.add_widget(buttons)
-        return row
+        overlay.add_widget(top)
+        overlay.add_widget(self.web_status)
+        overlay.add_widget(placeholder)
 
-    def copy_history_url(self, url):
-        Clipboard.copy(url)
-        self.set_status("Gecmisten kopyalandi", SUCCESS)
+        self.web_overlay = overlay
+        self.root.clear_widgets()
+        self.root.add_widget(overlay)
+            @run_on_ui_thread if run_on_ui_thread else (lambda f: f)
+    def _android_open_webview(self, url):
+        try:
+            PythonActivity = autoclass("org.kivy.android.PythonActivity")
+            WebView = autoclass("android.webkit.WebView")
+            WebViewClient = autoclass("android.webkit.WebViewClient")
+            WebSettings = autoclass("android.webkit.WebSettings")
+            LinearLayout = autoclass("android.widget.LinearLayout")
+            ViewGroup = autoclass("android.view.ViewGroup")
 
-    def open_tag_popup(self, item):
-        body = BoxLayout(orientation="vertical", padding=dp(14), spacing=dp(12))
+            activity = PythonActivity.mActivity
+
+            if self.webview is not None:
+                try:
+                    self.webview.destroy()
+                except Exception:
+                    pass
+                self.webview = None
+
+            webview = WebView(activity)
+            self.webview = webview
+
+            settings = webview.getSettings()
+            settings.setJavaScriptEnabled(True)
+            settings.setDomStorageEnabled(True)
+            settings.setLoadWithOverviewMode(True)
+            settings.setUseWideViewPort(True)
+            settings.setSupportZoom(True)
+            settings.setBuiltInZoomControls(False)
+            settings.setCacheMode(WebSettings.LOAD_DEFAULT)
+            settings.setUserAgentString(
+                "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/126.0 Mobile Safari/537.36"
+            )
+
+            webview.setWebViewClient(WebViewClient())
+
+            params = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT,
+            )
+
+            activity.addContentView(webview, params)
+            webview.loadUrl(url)
+
+            if self._web_poll_event:
+                self._web_poll_event.cancel()
+            self._web_poll_event = Clock.schedule_interval(lambda *_: self._poll_webview_url(), 1.0)
+
+        except Exception as exc:
+            self.set_status("WebView açılamadı: " + str(exc), ERROR)
+            try:
+                webbrowser.open(url)
+            except Exception:
+                pass
+
+    def _poll_webview_url(self):
+        if self.webview is None:
+            return False
+
+        try:
+            current = self._get_webview_url()
+            if current:
+                self.webview_target = current
+                if hasattr(self, "web_status"):
+                    self.web_status.text = current
+
+                # Final linke gelmiş gibi görünüyorsa otomatik yakala.
+                if looks_like_final_url(current):
+                    self._capture_url_value(current, auto=True)
+        except Exception:
+            pass
+
+        return True
+
+    def _get_webview_url(self):
+        if self.webview is None:
+            return ""
+
+        result = {"url": ""}
+
+        if run_on_ui_thread is None:
+            return ""
+
+        @run_on_ui_thread
+        def read_url():
+            try:
+                result["url"] = self.webview.getUrl() or ""
+            except Exception:
+                result["url"] = ""
+
+        read_url()
+        return result.get("url", "")
+
+    def capture_webview_url(self):
+        current = self._get_webview_url() or self.webview_target
+        if not current:
+            self.set_status("Yakalanacak URL yok", WARNING)
+            return
+
+        self._capture_url_value(current, auto=False)
+
+    def _capture_url_value(self, url, auto=False):
+        url = (url or "").strip()
+        if not url:
+            return
+
+        self.last_result = url
+        self.open_target = url
+        self.output.text = url
+
+        try:
+            Clipboard.copy(url)
+        except Exception:
+            pass
+
+        status = "success" if looks_like_final_url(url) else "manual"
+        note = "WebView final yakalandı" if status == "success" else "WebView URL yakalandı"
+
+        self._add_history(
+            input_url=self.last_input or self.url_input.text or url,
+            result_url=url,
+            status=status,
+            note=note,
+        )
+
+        if auto:
+            self.set_status("Final URL otomatik yakalandı", SUCCESS)
+        else:
+            self.set_status("URL yakalandı", SUCCESS)
+
+    def open_webview_external(self):
+        target = self.webview_target or self.open_target or self.last_input
+        if not target:
+            self.set_status("Açılacak link yok", WARNING)
+            return
+        try:
+            webbrowser.open(target)
+            self.set_status("Tarayıcıda açılıyor", SUCCESS)
+        except Exception:
+            self.set_status("Tarayıcı açılamadı", ERROR)
+
+    def close_webview(self):
+        if self._web_poll_event:
+            self._web_poll_event.cancel()
+            self._web_poll_event = None
+
+        if self.webview is not None and run_on_ui_thread is not None:
+            self._android_close_webview()
+        else:
+            self.webview = None
+
+        self.web_overlay = None
+        self.root.clear_widgets()
+        self.root.add_widget(self._rebuild_main_screen())
+
+    @run_on_ui_thread if run_on_ui_thread else (lambda f: f)
+    def _android_close_webview(self):
+        try:
+            if self.webview is not None:
+                parent = self.webview.getParent()
+                if parent is not None:
+                    parent.removeView(self.webview)
+                self.webview.destroy()
+        except Exception:
+            pass
+        self.webview = None
+
+    def _rebuild_main_screen(self):
+        # WebView kapatınca uygulamayı yeniden oluşturmak yerine mevcut ana ekranı tekrar kuruyoruz.
+        # En temiz yol: build() içindeki root'u yeniden üretmek.
+        old_input = self.url_input.text if hasattr(self, "url_input") else ""
+        old_output = self.output.text if hasattr(self, "output") else ""
+        old_status = self.status_label.text if hasattr(self, "status_label") else "Hazır"
+
+        new_root = BoxLayout(orientation="vertical", padding=dp(18), spacing=dp(14))
+        with new_root.canvas.before:
+            Color(*BG)
+            new_root._bg = RoundedRectangle(pos=new_root.pos, size=new_root.size, radius=[0])
+        new_root.bind(
+            pos=lambda w, *_: setattr(w._bg, "pos", w.pos),
+            size=lambda w, *_: setattr(w._bg, "size", w.size),
+        )
+
+        header = BoxLayout(orientation="horizontal", size_hint_y=None, height=dp(62), spacing=dp(12))
+
+        title_box = BoxLayout(orientation="vertical", spacing=dp(1))
         title = Label(
-            text="Etiket ekle",
+            text="Ayson",
+            color=TEXT,
+            bold=True,
+            font_size=dp(31),
+            halign="left",
+            valign="middle",
+            size_hint_y=1,
+        )
+        title.bind(size=lambda inst, *_: setattr(inst, "text_size", inst.size))
+        title_box.add_widget(title)
+
+        menu = MenuButton()
+        menu.bind(on_release=lambda *_: self.show_history())
+
+        header.add_widget(title_box)
+        header.add_widget(menu)
+        new_root.add_widget(header)
+
+        card = RoundedBox(orientation="vertical", padding=dp(14), spacing=dp(12), size_hint_y=None, height=dp(190))
+        self.url_input = ModernInput(hint_text="Linki buraya yapıştır")
+        self.url_input.text = old_input
+        card.add_widget(self.url_input)
+
+        row = BoxLayout(orientation="horizontal", spacing=dp(10), size_hint_y=None, height=dp(52))
+        self.solve_btn = PillButton(text="Çöz")
+        paste_btn = GhostButton(text="Yapıştır")
+        self.solve_btn.bind(on_release=lambda *_: self.solve())
+        paste_btn.bind(on_release=lambda *_: self.paste_clipboard())
+        row.add_widget(self.solve_btn)
+        row.add_widget(paste_btn)
+        card.add_widget(row)
+
+        self.status_label = Label(
+            text=old_status,
+            color=MUTED,
+            font_size=dp(13),
+            halign="left",
+            valign="middle",
+            size_hint_y=None,
+            height=dp(24),
+        )
+        self.status_label.bind(size=lambda inst, *_: setattr(inst, "text_size", inst.size))
+        card.add_widget(self.status_label)
+        new_root.add_widget(card)
+
+        result_card = RoundedBox(orientation="vertical", padding=dp(14), spacing=dp(10))
+        result_top = BoxLayout(orientation="horizontal", size_hint_y=None, height=dp(30))
+        result_title = Label(
+            text="Sonuç",
             color=TEXT,
             bold=True,
             font_size=dp(17),
-            size_hint_y=None,
-            height=dp(30),
             halign="left",
             valign="middle",
         )
-        title.bind(size=lambda inst, *_: setattr(inst, "text_size", inst.size))
-        tag_input = ModernInput(hint_text="Ornek: film, oyun, cloud, is")
-        tag_input.text = item.get("tag", "")
-        info = Label(
-            text="Bu metin gecmis aramasina dahil edilir.",
+        result_title.bind(size=lambda inst, *_: setattr(inst, "text_size", inst.size))
+        result_top.add_widget(result_title)
+        result_card.add_widget(result_top)
+
+        out_wrap = RoundedBox(
+            orientation="vertical",
+            bg_color=(0.060, 0.064, 0.090, 1),
+            border_color=(0.130, 0.145, 0.200, 1),
+        )
+        self.output = OutputBox(hint_text="Çözülen link burada görünür")
+        self.output.text = old_output
+        out_wrap.add_widget(self.output)
+        result_card.add_widget(out_wrap)
+
+        action_row = BoxLayout(orientation="horizontal", spacing=dp(10), size_hint_y=None, height=dp(52))
+        copy_btn = GhostButton(text="Kopyala")
+        self.open_btn = GhostButton(text="Aç")
+        self.inner_open_btn = GhostButton(text="İç Aç")
+        copy_btn.bind(on_release=lambda *_: self.copy_result())
+        self.open_btn.bind(on_release=lambda *_: self.open_current())
+        self.inner_open_btn.bind(on_release=lambda *_: self.open_current_inside())
+        action_row.add_widget(copy_btn)
+        action_row.add_widget(self.open_btn)
+        action_row.add_widget(self.inner_open_btn)
+        result_card.add_widget(action_row)
+
+        new_root.add_widget(result_card)
+
+        footer = Label(
+            text="Made By Black Corp.",
             color=MUTED,
             font_size=dp(12),
             size_hint_y=None,
             height=dp(24),
-            halign="left",
+            halign="center",
+            valign="middle",
         )
-        info.bind(size=lambda inst, *_: setattr(inst, "text_size", inst.size))
-        buttons = BoxLayout(orientation="horizontal", spacing=dp(8), size_hint_y=None, height=dp(44))
-        save_btn = PillButton(text="Kaydet", height=dp(44))
-        clear_btn = GhostButton(text="Etiketi sil", height=dp(44))
-        cancel_btn = GhostButton(text="Vazgec", height=dp(44))
-        buttons.add_widget(save_btn)
-        buttons.add_widget(clear_btn)
-        buttons.add_widget(cancel_btn)
-        body.add_widget(title)
-        body.add_widget(tag_input)
-        body.add_widget(info)
-        body.add_widget(buttons)
-        popup = Popup(
-            title="",
-            content=body,
-            size_hint=(0.88, 0.34),
-            background="",
-            background_color=(0.050, 0.052, 0.074, 1),
-            separator_height=0,
-        )
-        save_btn.bind(on_press=lambda *_args: self.save_tag(item, tag_input.text, popup))
-        clear_btn.bind(on_press=lambda *_args: self.save_tag(item, "", popup))
-        cancel_btn.bind(on_press=lambda *_args: popup.dismiss())
-        popup.open()
+        footer.bind(size=lambda inst, *_: setattr(inst, "text_size", inst.size))
+        new_root.add_widget(footer)
 
-    def save_tag(self, item, tag_text, popup):
-        result = item.get("result", "")
-        cleaned = (tag_text or "").strip()
-        for hist in self.history:
-            if hist.get("result") == result:
-                hist["tag"] = cleaned
-                break
-        self._save_history()
-        try:
-            popup.dismiss()
-        except Exception:
-            pass
-        self.refresh_history_list()
-        self.set_status("Etiket kaydedildi" if cleaned else "Etiket silindi", SUCCESS)
+        self.root = new_root
+        return new_root
 
 
 if __name__ == "__main__":
