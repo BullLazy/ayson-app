@@ -16,7 +16,7 @@ except Exception:
     certifi = None
 
 
-VERSION = "V1.6-final-real-redirect"
+VERSION = "V2.2-expanded-safe-redirect"
 
 SUPPORTED_HOSTS = {
     "ay.live",
@@ -33,11 +33,42 @@ TRLINK_HOSTS = {"ay.live", "aylink.co", "cpmlink.co", "cpmlink.pro"}
 BILDIRIM_HOSTS = {"bildirim.online", "bildirim.vip"}
 OUO_HOSTS = {"ouo.io", "ouo.press"}
 
+GENERIC_REDIRECT_HOSTS = {
+    "bit.ly",
+    "bitly.com",
+    "tinyurl.com",
+    "is.gd",
+    "v.gd",
+    "t.co",
+    "lnkd.in",
+    "goo.gl",
+    "ow.ly",
+    "buff.ly",
+    "rebrand.ly",
+    "rb.gy",
+    "shorturl.at",
+    "cutt.ly",
+    "s.id",
+    "tiny.cc",
+    "short.io",
+    "lnk.news",
+    "tulink.fun",
+    "adf.ly",
+    "bc.vc",
+    "shorte.st",
+    "clk.sh",
+    "shrinke.me",
+    "exe.io",
+    "exey.io",
+    "fc.lc",
+    "fc-lc.xyz",
+    "linkvertise.com",
+}
+
+SUPPORTED_HOSTS.update(GENERIC_REDIRECT_HOSTS)
+
 URL_RE = re.compile(r"https?://[^\s'\"<>`\\]+", re.I)
 
-# These are almost always page assets, ad assets, placeholder images, or libraries.
-# They are NOT accepted when scraping HTML. Server/API returned URLs are treated
-# more leniently because the final target may legitimately be a direct file.
 NOISE_HOSTS = {
     "cdn.jsdelivr.net",
     "cdnjs.cloudflare.com",
@@ -93,7 +124,6 @@ NOISE_WORDS = (
 
 
 def clean_url(value):
-    """Normalize URL-ish strings without destroying query parameters."""
     if value is None:
         return ""
 
@@ -101,7 +131,6 @@ def clean_url(value):
     s = s.replace("\\/", "/")
     s = s.strip().strip(".,;)'\"`]}")
 
-    # Some pages put encoded URLs in JS values.
     for _ in range(2):
         low = s.lower()
         if low.startswith("http%") or "%3a%2f%2f" in low:
@@ -171,14 +200,47 @@ def is_valid_final_candidate(url, from_page=True):
     return True
 
 
+def extract_target_from_query(url):
+    keys = (
+        "url",
+        "u",
+        "to",
+        "target",
+        "dest",
+        "destination",
+        "redirect",
+        "redirect_url",
+        "redirect_uri",
+        "r",
+        "link",
+        "go",
+        "site",
+    )
+
+    try:
+        parsed = urllib.parse.urlparse(url)
+        qs = urllib.parse.parse_qs(parsed.query, keep_blank_values=False)
+    except Exception:
+        return ""
+
+    for key in keys:
+        values = qs.get(key) or qs.get(key.upper())
+        if not values:
+            continue
+        val = html.unescape(urllib.parse.unquote(values[0])).strip()
+        val = clean_url(val)
+        if is_http_url(val):
+            return val
+
+    return ""
+
+
 def b64_try_decode(value):
     raw = str(value or "").strip()
     if not raw:
         return ""
 
-    attempts = []
-    attempts.append(raw)
-    attempts.append(urllib.parse.unquote(raw))
+    attempts = [raw, urllib.parse.unquote(raw)]
 
     for item in attempts:
         item = item.strip()
@@ -218,7 +280,6 @@ def parse_json_maybe(text):
     except Exception:
         pass
 
-    # Sometimes JSON is wrapped with noise. Keep this conservative.
     m = re.search(r"(\{[\s\S]*\})", s)
     if m:
         try:
@@ -228,9 +289,7 @@ def parse_json_maybe(text):
 
     return None
 
-
 def json_candidate_values(obj):
-    """Pull only URL-like values from JSON responses."""
     keys = {
         "url",
         "href",
@@ -322,8 +381,6 @@ class InputParser(HTMLParser):
                 attrs_dict.get(k, "")
                 for k in ("id", "class", "name", "rel", "data-action", "aria-label", "title")
             )
-            # Do not accept every href. Only button/link names that clearly look
-            # like a redirect/continue/download action are considered.
             if href and re.search(
                 r"(continue|go|git|link|redirect|download|skip|devam|hedef|target)",
                 meta,
@@ -351,7 +408,6 @@ def get_input_value(body, *names):
             if val != "":
                 return html.unescape(val)
 
-    # Regex fallback for malformed HTML.
     for name in names:
         patterns = [
             rf"""name=["']{re.escape(name)}["'][^>]*value=["']([^"']*)["']""",
@@ -382,18 +438,9 @@ def extract_atd_values(body):
     if m:
         return m.group(1), m.group(2), m.group(3)
 
-    a_val = (
-        get_input_value(body, "_a")
-        or find_one(body, [r"""_a\s*[:=]\s*['"]([^'"]+)['"]"""])
-    )
-    t_val = (
-        get_input_value(body, "_t")
-        or find_one(body, [r"""_t\s*[:=]\s*['"]([^'"]+)['"]"""])
-    )
-    d_val = (
-        get_input_value(body, "_d")
-        or find_one(body, [r"""_d\s*[:=]\s*['"]([^'"]+)['"]"""])
-    )
+    a_val = get_input_value(body, "_a") or find_one(body, [r"""_a\s*[:=]\s*['"]([^'"]+)['"]"""])
+    t_val = get_input_value(body, "_t") or find_one(body, [r"""_t\s*[:=]\s*['"]([^'"]+)['"]"""])
+    d_val = get_input_value(body, "_d") or find_one(body, [r"""_d\s*[:=]\s*['"]([^'"]+)['"]"""])
 
     return a_val, t_val, d_val
 
@@ -481,7 +528,6 @@ def high_confidence_urls_from_text(text, base_url=""):
 
     return dedupe(normalized)
 
-
 class Resolver:
     def __init__(self):
         self.cj = CookieJar()
@@ -551,9 +597,7 @@ class Resolver:
         body_data = data
         if isinstance(data, dict):
             body_data = urllib.parse.urlencode(data).encode("utf-8")
-            default_headers.setdefault(
-                "Content-Type", "application/x-www-form-urlencoded; charset=UTF-8"
-            )
+            default_headers.setdefault("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8")
 
         class NoRedirect(urllib.request.HTTPRedirectHandler):
             def redirect_request(self, req, fp, code, msg, hdrs, newurl):
@@ -568,12 +612,7 @@ class Resolver:
                     NoRedirect,
                 )
 
-            req = urllib.request.Request(
-                url,
-                data=body_data,
-                headers=default_headers,
-                method=method,
-            )
+            req = urllib.request.Request(url, data=body_data, headers=default_headers, method=method)
 
             try:
                 with opener.open(req, timeout=timeout) as resp:
@@ -648,7 +687,6 @@ class Resolver:
 
             try:
                 with opener.open(req, timeout=15) as resp:
-                    # HTTP 200 or no redirect. Return the current URL, not the body.
                     return resp.geturl()
             except urllib.error.HTTPError as exc:
                 if exc.code in (301, 302, 303, 307, 308):
@@ -683,6 +721,8 @@ class Resolver:
             return self.resolve_trlink(candidate, depth=depth + 1)
         if h in OUO_HOSTS:
             return self.resolve_ouo(candidate, depth=depth + 1)
+        if h in GENERIC_REDIRECT_HOSTS:
+            return self.resolve_generic_redirect(candidate, depth=depth + 1)
 
         if is_valid_final_candidate(candidate, from_page=from_page):
             return self.follow_http_redirects(candidate)
@@ -707,8 +747,6 @@ class Resolver:
             candidates.extend(high_confidence_urls_from_text(decoded_path, page_url))
             candidates.extend(self.find_urls_in_text(decoded_path, page_url, from_page=False))
 
-        # Only high-confidence assignments/attributes are accepted here.
-        # Plain href/src scraping is intentionally not used.
         candidates.extend(high_confidence_urls_from_text(body, page_url))
 
         for candidate in dedupe(candidates):
@@ -722,10 +760,6 @@ class Resolver:
         data = parse_json_maybe(tk_body)
         if data is None:
             return ""
-
-        if isinstance(data, dict) and data.get("status") is False:
-            # Still continue below in case token exists with a nonstandard response.
-            pass
 
         values = []
         if isinstance(data, dict):
@@ -766,16 +800,13 @@ class Resolver:
                 if result:
                     return result
 
-        # /links/go2 is a trusted endpoint. If it returns a raw URL or a small
-        # text snippet containing one, that URL can be considered. This is not
-        # done for the initial ad page body.
         for candidate in self.find_urls_in_text(go_body, base_url, from_page=False):
             result = self._resolve_candidate(candidate, base_url, depth, from_page=False)
             if result:
                 return result
 
         return None
-
+        
     def resolve_trlink(self, url, depth=0):
         self._guard_depth(depth)
 
@@ -791,8 +822,6 @@ class Resolver:
                 "Uygulama rastgele link döndürmeyecek; doğrulama geçmeden gerçek final link alınamaz."
             )
 
-        # If the landing page already contains the trusted notification bridge,
-        # resolve that bridge. Do not return random external URLs from this page.
         for candidate in self.find_urls_in_text(body, page_url, from_page=True):
             if host_of(candidate) in BILDIRIM_HOSTS:
                 return self.resolve_bildirim(candidate, depth=depth + 1)
@@ -826,9 +855,7 @@ class Resolver:
             raise RuntimeError("/get/tk token döndürmedi; gerçek link alınamadı.")
 
         payloads = [
-            # Current TRLink/Aylink browser flow.
             compact_dict({"alias": alias, "csrf": csrf, "tkn": tkn}),
-            # Compatibility variants for older/newer server responses.
             compact_dict({"alias": alias, "csrf": csrf, "token": tkn}),
             compact_dict(
                 {
@@ -867,6 +894,57 @@ class Resolver:
 
         raise RuntimeError("Aylive/Aylink akışı çözülemedi; rastgele dış link döndürülmedi.")
 
+    def resolve_generic_redirect(self, url, depth=0):
+        self._guard_depth(depth)
+        url = clean_url(url)
+
+        target = extract_target_from_query(url)
+        if target:
+            result = self._resolve_candidate(target, url, depth, from_page=False)
+            if result:
+                return result
+
+        page_url, status, headers, body = self.request(url, allow_redirects=True)
+        page_host = host_of(page_url)
+
+        if page_host in SUPPORTED_HOSTS:
+            if page_host in BILDIRIM_HOSTS:
+                return self.resolve_bildirim(page_url, depth=depth + 1)
+
+            if page_host in TRLINK_HOSTS:
+                return self.resolve_trlink(page_url, depth=depth + 1)
+
+            if page_host in OUO_HOSTS:
+                return self.resolve_ouo(page_url, depth=depth + 1)
+
+            if page_host in GENERIC_REDIRECT_HOSTS and page_url != url:
+                return self.resolve_generic_redirect(page_url, depth=depth + 1)
+
+        if page_host not in SUPPORTED_HOSTS and is_valid_final_candidate(page_url, from_page=False):
+            return self.follow_http_redirects(page_url)
+
+        if contains_human_challenge(body):
+            raise RuntimeError(
+                "Bu kısaltma servisi CAPTCHA/anti-bot doğrulaması istiyor. "
+                "Uygulama bunu atlatmayacak; orijinal linki tarayıcıda aç."
+            )
+
+        for candidate in high_confidence_urls_from_text(body, page_url):
+            result = self._resolve_candidate(candidate, page_url, depth, from_page=False)
+            if result:
+                return result
+
+        target = extract_target_from_query(page_url)
+        if target:
+            result = self._resolve_candidate(target, page_url, depth, from_page=False)
+            if result:
+                return result
+
+        raise RuntimeError(
+            "Bu kısaltma servisi normal redirect ile çözülemedi. "
+            "CAPTCHA, süre bekleme veya değişmiş sayfa yapısı olabilir."
+        )
+
     def resolve_ouo(self, url, depth=0):
         self._guard_depth(depth)
 
@@ -877,13 +955,10 @@ class Resolver:
         if not slug:
             raise RuntimeError("OUO slug bulunamadı.")
 
-        current_url = url
         body = ""
 
-        # First try direct/no-redirect checks. Some OUO links expose the final
-        # target as a Location header after the expected endpoint.
         checks = [
-            current_url,
+            url,
             f"{base}/go/{slug}",
             f"{base}/xreallcygo/{slug}",
         ]
@@ -902,8 +977,6 @@ class Resolver:
                 "Doğrulama tokenı olmadan gerçek final link alınamaz."
             )
 
-        # Try form-token flow without solving any CAPTCHA. If the page already
-        # contains usable token inputs, POST them and read Location.
         page_url, status, headers, body = self.request(url, allow_redirects=True)
         if host_of(page_url) not in SUPPORTED_HOSTS and is_valid_final_candidate(page_url, from_page=False):
             return self.follow_http_redirects(page_url)
@@ -933,7 +1006,6 @@ class Resolver:
 
             page_url = got_url
 
-        # Last conservative scrape: only explicit redirect assignments.
         for candidate in high_confidence_urls_from_text(body, page_url):
             result = self._resolve_candidate(candidate, page_url, depth, from_page=False)
             if result:
@@ -951,6 +1023,11 @@ class Resolver:
             return self.resolve_trlink(url)
         if h in OUO_HOSTS:
             return self.resolve_ouo(url)
+        if h in GENERIC_REDIRECT_HOSTS:
+            return self.resolve_generic_redirect(url)
+
+        if is_http_url(url):
+            return self.resolve_generic_redirect(url)
 
         raise RuntimeError("Desteklenmeyen domain: " + h)
 
