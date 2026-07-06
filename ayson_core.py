@@ -87,6 +87,11 @@ NOISE_HOSTS = {
     "via.placeholder.com",
     "dummyimage.com",
     "placeimg.com",
+    "web.resource.org",
+    "www.w3.org",
+    "purl.org",
+    "schema.org",
+    "ogp.me"
 }
 
 NOISE_EXTS = (
@@ -176,12 +181,33 @@ def is_noise_url(url, from_page=True):
 
     if not h:
         return True
+
     if h in NOISE_HOSTS:
         return True
+
+    # RSS/XML/OpenGraph/Schema namespace linkleri final link değildir.
+    namespace_patterns = (
+        "rss/1.0/modules",
+        "/rdf",
+        "/rss",
+        "/xml",
+        "/xmlns",
+        "schema.org",
+        "ogp.me/ns",
+        "purl.org/rss",
+        "w3.org/1999",
+        "w3.org/2000",
+        "w3.org/2001",
+    )
+    if any(p in low for p in namespace_patterns):
+        return True
+
     if from_page and path.endswith(NOISE_EXTS):
         return True
+
     if from_page and any(word in low for word in NOISE_WORDS):
         return True
+
     return False
 
 
@@ -929,7 +955,7 @@ class Resolver:
             # Sayfadaki Linke Git / data-url / location / redirect alanlarını ara.
             candidates = []
             candidates.extend(high_confidence_urls_from_text(body, page_url))
-            candidates.extend(self.find_urls_in_text(body, page_url, from_page=True))
+            
 
             for candidate in dedupe(candidates):
                 result = self._resolve_candidate(candidate, page_url, depth, from_page=False)
@@ -940,10 +966,13 @@ class Resolver:
             extra_paths = []
             for pat in (
                 r"""['"](/[^'"]*(?:go|link|redirect|continue|get|target)[^'"]*)['"]""",
-                r"""href=["']([^"']+)["']""",
+                r"""href=["']([^"']*(?:go|link|redirect|continue|get|target)[^"']*)["']""",
                 r"""data-url=["']([^"']+)["']""",
                 r"""data-href=["']([^"']+)["']""",
             ):
+                
+
+                
                 for m in re.findall(pat, body or "", re.I):
                     if isinstance(m, tuple):
                         m = next((x for x in m if x), "")
