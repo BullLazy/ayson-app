@@ -15,7 +15,7 @@ except Exception:
     certifi = None
 
 
-VERSION = "V1.5-global-asset-filter"
+VERSION = "V1.6-placeholder-filter"
 
 
 def make_unverified_context(*args, **kwargs):
@@ -58,6 +58,15 @@ BAD_ASSET_HOSTS = {
     "fonts.gstatic.com",
     "unpkg.com",
     "cdn.datatables.net",
+
+    # placeholder / görsel servisleri
+    "loremflickr.com",
+    "picsum.photos",
+    "placehold.co",
+    "placeholder.com",
+    "dummyimage.com",
+    "via.placeholder.com",
+    "images.unsplash.com",
 }
 
 BAD_ASSET_EXTS = (
@@ -105,7 +114,16 @@ def is_static_asset_url(url):
         "jsdelivr",
         "googleapis",
         "gstatic",
+        "loremflickr",
+        "placeholder",
+        "dummyimage",
+        "picsum",
+        "unsplash",
+        "/women/",
+        "/image/",
+        "/images/",
     ]
+
 
     return any(w in url_l for w in bad_words)
 
