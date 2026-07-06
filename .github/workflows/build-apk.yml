@@ -46,18 +46,13 @@ jobs:
           python3 -m pip install --upgrade pip wheel setuptools
           python3 -m pip install buildozer==1.6.0 cython==0.29.37
 
-      - name: Pre-accept Android SDK licenses
+      - name: Clean broken SDK cache
         run: |
-          mkdir -p "$HOME/.buildozer/android/platform/android-sdk/licenses"
-          cat > "$HOME/.buildozer/android/platform/android-sdk/licenses/android-sdk-license" <<'EOF'
-          8933bad161af4178b1185d1a37fbf41ea5269c55
-          d56f5187479451eabf01fb78af6dfcb131a6481e
-          24333f8a63b6825ea9c5514f83c2829b004d1fee
-          EOF
+          rm -rf "$HOME/.buildozer/android/platform/android-sdk"
 
       - name: Build APK
         run: |
-          buildozer android debug
+          yes y | buildozer android debug
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
