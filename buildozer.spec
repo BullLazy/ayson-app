@@ -7,7 +7,7 @@ package.domain = org.ayson
 source.dir = .
 source.include_exts = py,png,jpg,kv,atlas
 
-version = 1.4
+version = 1.5
 
 requirements = python3,kivy,certifi
 
