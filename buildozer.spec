@@ -3,6 +3,7 @@
 title = Ayson V16
 package.name = aysonv16
 package.domain = org.ayson
+icon.filename = icon.png
 
 source.dir = .
 source.include_exts = py,png,jpg,kv,atlas
