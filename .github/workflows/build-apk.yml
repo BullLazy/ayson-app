@@ -1,62 +1,67 @@
-
 name: Build Android APK
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - main
 
 jobs:
   build:
     runs-on: ubuntu-22.04
 
     steps:
-      - name: Checkout
+      - name: Checkout repo
         uses: actions/checkout@v4
 
       - name: Set up Java 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '17'
+          java-version: "17"
 
       - name: Install system dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y \
+          sudo apt update
+          sudo apt install -y \
+            python3-pip \
+            python3-setuptools \
+            python3-wheel \
             git \
             zip \
             unzip \
             openjdk-17-jdk \
-            python3-pip \
-            python3-setuptools \
-            python3-wheel \
             autoconf \
             libtool \
             pkg-config \
             zlib1g-dev \
             libncurses5-dev \
             libncursesw5-dev \
+            libtinfo5 \
             cmake \
             libffi-dev \
-            libssl-dev \
-            automake \
-            autopoint \
-            gettext
+            libssl-dev
 
-      - name: Install Python build tools
+      - name: Install Buildozer
         run: |
-          python3 -m pip install --upgrade pip wheel setuptools
-          python3 -m pip install buildozer==1.6.0 cython==0.29.37
+          python3 -m pip install --upgrade pip
+          python3 -m pip install buildozer cython
 
-      - name: Clean old Buildozer output
+      - name: Restore release keystore
         run: |
-          rm -rf .buildozer bin
+          echo "${{ secrets.P4A_RELEASE_KEYSTORE_BASE64 }}" | base64 -d > ayson-release.keystore
 
-      - name: Build APK
+      - name: Build release APK
+        env:
+          P4A_RELEASE_KEYSTORE: ${{ github.workspace }}/ayson-release.keystore
+          P4A_RELEASE_KEYALIAS: ${{ secrets.P4A_RELEASE_KEYALIAS }}
+          P4A_RELEASE_KEYSTORE_PASSWD: ${{ secrets.P4A_RELEASE_KEYSTORE_PASSWD }}
+          P4A_RELEASE_KEYALIAS_PASSWD: ${{ secrets.P4A_RELEASE_KEYALIAS_PASSWD }}
         run: |
-          yes y | buildozer android debug
+          buildozer -v android release
 
-      - name: Upload APK
+      - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ayson-apk
+          name: ayson-v21-release-apk
           path: bin/*.apk
