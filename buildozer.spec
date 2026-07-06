@@ -1,7 +1,7 @@
 [app]
 
-title = Ayson
-package.name = ayson
+title = Ayson V13
+package.name = aysonv13
 package.domain = org.ayson
 
 source.dir = .
