@@ -58,7 +58,7 @@ def b64_try_decode(s):
 class Resolver:
     def __init__(self):
         self.cj = CookieJar()
-        self.ssl_context = ssl.create_default_context(cafile=certifi.where())
+        self.ssl_context = ssl._create_unverified_context()
         self.opener = urllib.request.build_opener(
             urllib.request.HTTPCookieProcessor(self.cj),
             urllib.request.HTTPSHandler(context=self.ssl_context),
