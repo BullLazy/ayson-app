@@ -3,3 +3,24 @@
     <category android:name="android.intent.category.DEFAULT" />
     <data android:mimeType="text/plain" />
 </intent-filter>
+
+<intent-filter>
+    <action android:name="android.intent.action.VIEW" />
+    <category android:name="android.intent.category.DEFAULT" />
+    <category android:name="android.intent.category.BROWSABLE" />
+
+    <data android:scheme="https" android:host="ay.live" />
+    <data android:scheme="https" android:host="www.ay.live" />
+
+    <data android:scheme="https" android:host="aylink.co" />
+    <data android:scheme="https" android:host="www.aylink.co" />
+
+    <data android:scheme="https" android:host="cpmlink.pro" />
+    <data android:scheme="https" android:host="www.cpmlink.pro" />
+
+    <data android:scheme="https" android:host="ouo.io" />
+    <data android:scheme="https" android:host="www.ouo.io" />
+
+    <data android:scheme="https" android:host="ouo.press" />
+    <data android:scheme="https" android:host="www.ouo.press" />
+</intent-filter>
