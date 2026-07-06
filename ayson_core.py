@@ -161,7 +161,7 @@ class Resolver:
 
         return out
 
-    def resolve_bildirim(self, url):
+        def resolve_bildirim(self, url):
         final_url, status, headers, body = self.request(url)
 
         candidates = []
@@ -178,29 +178,86 @@ class Resolver:
         patterns = [
             r"""data-url=["']([^"']+)["']""",
             r"""data-href=["']([^"']+)["']""",
-            r"""(?:go_url|uri_full|target|destination|url)\s*[:=]\s*["']([^"']+)["']""",
+            r"""(?:go_url|uri_full|target|destination|redirect|real_url|realUrl|url)\s*[:=]\s*["']([^"']+)["']""",
             r"""window\.open\(["']([^"']+)["']""",
             r"""location(?:\.href)?\s*=\s*["']([^"']+)["']""",
+            r"""href=["']([^"']+)["']""",
         ]
 
         for pat in patterns:
             for m in re.findall(pat, body or "", re.I):
                 m = clean_url(m)
 
+                if m.startswith("//"):
+                    m = "https:" + m
+
                 if m.startswith("http") and m not in candidates:
                     candidates.append(m)
 
+        def is_bad_candidate(candidate):
+            h = host_of(candidate)
+            p = urllib.parse.urlparse(candidate).path.lower()
+
+            bad_hosts = {
+                "cdn.jsdelivr.net",
+                "cdnjs.cloudflare.com",
+                "stackpath.bootstrapcdn.com",
+                "maxcdn.bootstrapcdn.com",
+                "code.jquery.com",
+                "ajax.googleapis.com",
+                "fonts.googleapis.com",
+                "fonts.gstatic.com",
+                "unpkg.com",
+                "cdn.datatables.net",
+            }
+
+            bad_exts = (
+                ".css", ".js", ".png", ".jpg", ".jpeg", ".gif", ".webp",
+                ".svg", ".ico", ".woff", ".woff2", ".ttf", ".eot", ".map"
+            )
+
+            if h in bad_hosts:
+                return True
+
+            if p.endswith(bad_exts):
+                return True
+
+            if "bootstrap" in candidate.lower():
+                return True
+
+            if "jquery" in candidate.lower():
+                return True
+
+            return False
+
+        cleaned = []
         for c in candidates:
+            c = clean_url(c)
+
+            if not c.startswith("http"):
+                continue
+
+            if c in cleaned:
+                continue
+
+            if is_bad_candidate(c):
+                continue
+
+            cleaned.append(c)
+
+        # Önce desteklenen ara domain olmayan gerçek hedefleri seç.
+        for c in cleaned:
             h = host_of(c)
 
             if h not in SUPPORTED_HOSTS:
                 return c
 
-        if candidates:
-            return candidates[-1]
+        # Eğer sadece desteklenen ara linkler kaldıysa sonuncuyu dön.
+        if cleaned:
+            return cleaned[-1]
 
         raise RuntimeError("bildirim ara sayfasında gerçek link bulunamadı.")
-
+        
     def resolve_ouo(self, url):
         parsed = urllib.parse.urlparse(url)
         base = f"{parsed.scheme}://{parsed.netloc}"
