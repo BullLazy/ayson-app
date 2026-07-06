@@ -217,7 +217,7 @@ class ModernInput(TextInput):
         self.hint_text_color = MUTED
         self.cursor_color = ACCENT
         self.selection_color = (0.365, 0.455, 1.0, 0.35)
-                self.padding = [dp(16), dp(15), dp(16), dp(15)]
+        self.padding = [dp(16), dp(15), dp(16), dp(15)]
         self.font_size = dp(15)
         self.multiline = False
         self.size_hint_y = None
