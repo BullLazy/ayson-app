@@ -894,6 +894,110 @@ class Resolver:
 
         raise RuntimeError("Aylive/Aylink akışı çözülemedi; rastgele dış link döndürülmedi.")
 
+        def resolve_tulink(self, url, depth=0):
+        self._guard_depth(depth)
+        url = clean_url(url)
+
+        # Tulink süreli ara sayfa. İlk açılışta link hazır olmayabilir.
+        # Birkaç kez bekleyip tekrar deniyoruz.
+        last_body = ""
+        last_page_url = url
+
+        for attempt in range(4):
+            page_url, status, headers, body = self.request(url, allow_redirects=True)
+            last_body = body
+            last_page_url = page_url
+
+            page_host = host_of(page_url)
+
+            # Eğer tulink başka desteklenen domaine yönlendirdiyse çözmeye devam et.
+            if page_host in SUPPORTED_HOSTS and page_host != "tulink.fun":
+                if page_host in GENERIC_REDIRECT_HOSTS:
+                    return self.resolve_generic_redirect(page_url, depth=depth + 1)
+                if page_host in TRLINK_HOSTS:
+                    return self.resolve_trlink(page_url, depth=depth + 1)
+                if page_host in OUO_HOSTS:
+                    return self.resolve_ouo(page_url, depth=depth + 1)
+                if page_host in BILDIRIM_HOSTS:
+                    return self.resolve_bildirim(page_url, depth=depth + 1)
+
+            # Eğer desteklenen domain dışına çıktıysa final say.
+            if page_host not in SUPPORTED_HOSTS and is_valid_final_candidate(page_url, from_page=False):
+                return self.follow_http_redirects(page_url)
+
+            # Sayfadaki Linke Git / data-url / location / redirect alanlarını ara.
+            candidates = []
+            candidates.extend(high_confidence_urls_from_text(body, page_url))
+            candidates.extend(self.find_urls_in_text(body, page_url, from_page=True))
+
+            for candidate in dedupe(candidates):
+                result = self._resolve_candidate(candidate, page_url, depth, from_page=False)
+                if result:
+                    return result
+
+            # Buton JS ile endpoint çağırıyor olabilir. Metinde özel link endpointleri ara.
+            extra_paths = []
+            for pat in (
+                r"""['"](/[^'"]*(?:go|link|redirect|continue|get|target)[^'"]*)['"]""",
+                r"""href=["']([^"']+)["']""",
+                r"""data-url=["']([^"']+)["']""",
+                r"""data-href=["']([^"']+)["']""",
+            ):
+                for m in re.findall(pat, body or "", re.I):
+                    if isinstance(m, tuple):
+                        m = next((x for x in m if x), "")
+                    if m:
+                        extra_paths.append(m)
+
+            for path in dedupe(extra_paths):
+                candidate_url = absolutize_url(path, page_url)
+                if not candidate_url:
+                    continue
+
+                ch = host_of(candidate_url)
+
+                # Tulink iç endpointiyse onu çek, içinden final link ara.
+                if ch == "tulink.fun":
+                    try:
+                        got_url, st, hdrs, b2 = self.request(
+                            candidate_url,
+                            headers={"Referer": page_url},
+                            allow_redirects=True,
+                        )
+
+                        got_host = host_of(got_url)
+                        if got_host in SUPPORTED_HOSTS and got_host != "tulink.fun":
+                            return self._resolve_candidate(got_url, page_url, depth, from_page=False)
+
+                        if got_host not in SUPPORTED_HOSTS and is_valid_final_candidate(got_url, from_page=False):
+                            return self.follow_http_redirects(got_url)
+
+                        for c2 in high_confidence_urls_from_text(b2, got_url):
+                            result = self._resolve_candidate(c2, got_url, depth, from_page=False)
+                            if result:
+                                return result
+                    except Exception:
+                        pass
+
+                else:
+                    result = self._resolve_candidate(candidate_url, page_url, depth, from_page=False)
+                    if result:
+                        return result
+
+            # Yeşil bar dolsun diye bekle.
+            time.sleep(3)
+
+        if contains_human_challenge(last_body):
+            raise RuntimeError(
+                "tulink.fun bekleme/koruma ekranında kaldı. "
+                "Uygulama yanlış link vermedi; tarayıcıda açıp devam edebilirsin."
+            )
+
+        raise RuntimeError(
+            "tulink.fun üzerinde Linke Git yönlendirmesi bulunamadı. "
+            "Sayfa yapısı değişmiş veya buton sadece tarayıcı JavaScript'i ile aktif oluyor olabilir."
+        )
+    
     def resolve_generic_redirect(self, url, depth=0):
         self._guard_depth(depth)
         url = clean_url(url)
