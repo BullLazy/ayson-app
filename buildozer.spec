@@ -5,6 +5,8 @@ package.name = aysonv16
 package.domain = org.ayson
 icon.filename = icon.png
 
+android.add_intent_filters = intent_filters.xml
+
 source.dir = .
 source.include_exts = py,png,jpg,kv,atlas
 
