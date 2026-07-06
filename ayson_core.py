@@ -721,9 +721,10 @@ class Resolver:
             return self.resolve_trlink(candidate, depth=depth + 1)
         if h in OUO_HOSTS:
             return self.resolve_ouo(candidate, depth=depth + 1)
+        if h == "tulink.fun":
+            return self.resolve_tulink(candidate, depth=depth + 1)
         if h in GENERIC_REDIRECT_HOSTS:
             return self.resolve_generic_redirect(candidate, depth=depth + 1)
-
         if is_valid_final_candidate(candidate, from_page=from_page):
             return self.follow_http_redirects(candidate)
 
