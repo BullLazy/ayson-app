@@ -15,7 +15,7 @@ except Exception:
     certifi = None
 
 
-VERSION = "V1.3-app-force-ssl-bypass"
+VERSION = "V1.4-filter-static-assets"
 
 
 def make_unverified_context(*args, **kwargs):
