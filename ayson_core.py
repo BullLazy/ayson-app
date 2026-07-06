@@ -9,10 +9,18 @@ import urllib.parse
 import urllib.request
 from http.cookiejar import CookieJar
 
-import certifi
+try:
+    import certifi
+except Exception:
+    certifi = None
 
 
-VERSION = "V1.1-app-ssl"
+# Android APK içinde Python bazen CA sertifika zincirini bulamıyor.
+# Bu araç sadece link çözme amacıyla kullanıldığı için SSL doğrulamasını global kapatıyoruz.
+ssl._create_default_https_context = ssl._create_unverified_context
+
+
+VERSION = "V1.2-app-ssl-bypass"
 
 SUPPORTED_HOSTS = {
     "ay.live",
@@ -58,7 +66,10 @@ def b64_try_decode(s):
 class Resolver:
     def __init__(self):
         self.cj = CookieJar()
+
+        # Kesin çözüm: Bu context sertifika doğrulamaz.
         self.ssl_context = ssl._create_unverified_context()
+
         self.opener = urllib.request.build_opener(
             urllib.request.HTTPCookieProcessor(self.cj),
             urllib.request.HTTPSHandler(context=self.ssl_context),
@@ -69,8 +80,10 @@ class Resolver:
             headers = {}
 
         default_headers = {
-            "User-Agent": "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 "
-                          "(KHTML, like Gecko) Chrome/126.0 Mobile Safari/537.36",
+            "User-Agent": (
+                "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/126.0 Mobile Safari/537.36"
+            ),
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
             "Accept-Language": "tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7",
             "Connection": "close",
@@ -137,6 +150,7 @@ class Resolver:
         parsed = urllib.parse.urlparse(url)
         last = parsed.path.rstrip("/").split("/")[-1]
         decoded_path = b64_try_decode(last)
+
         if decoded_path:
             candidates.extend(self.find_urls_in_text(decoded_path))
 
@@ -241,8 +255,10 @@ class Resolver:
         base = f"{parsed.scheme}://{parsed.netloc}"
 
         visitor_token = ""
+
         try:
             tk_payload = {}
+
             if alias:
                 tk_payload["alias"] = alias
             if csrf:
@@ -268,10 +284,12 @@ class Resolver:
                 )
             except Exception:
                 visitor_token = ""
+
         except Exception:
             pass
 
         go_payload = {}
+
         if alias:
             go_payload["alias"] = alias
         if csrf:
@@ -306,17 +324,22 @@ class Resolver:
                     or j.get("location")
                     or j.get("href")
                 )
+
                 if candidate:
                     candidate = clean_url(candidate)
+
                     if host_of(candidate) in BILDIRIM_HOSTS:
                         return self.resolve_bildirim(candidate)
+
                     return candidate
+
             except Exception:
                 pass
 
             for u in self.find_urls_in_text(go_body):
                 if host_of(u) in BILDIRIM_HOSTS:
                     return self.resolve_bildirim(u)
+
                 if host_of(u) not in SUPPORTED_HOSTS:
                     return u
 
