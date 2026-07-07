@@ -1,10 +1,8 @@
 [app]
-
 title = Ayson V21
 package.name = aysonv21
 package.domain = org.ayson
 icon.filename = icon.png
-
 android.add_intent_filters = intent_filters.xml
 
 source.dir = .
@@ -15,7 +13,6 @@ version = 2.1
 requirements = python3,kivy,certifi
 
 orientation = portrait
-
 fullscreen = 0
 
 android.permissions = INTERNET
@@ -30,6 +27,5 @@ android.numeric_version = 21
 p4a.branch = master
 
 [buildozer]
-
 log_level = 2
 warn_on_root = 1
