@@ -1,14 +1,15 @@
 [app]
-title = Ayson V21
-package.name = aysonv21
+title = Ayson V23
+package.name = aysonv23
 package.domain = org.ayson
 icon.filename = icon.png
+
 android.add_intent_filters = intent_filters.xml
 
 source.dir = .
 source.include_exts = py,png,jpg,kv,atlas,xml
 
-version = 2.1
+version = 2.3
 
 requirements = python3,kivy,certifi
 
@@ -22,9 +23,10 @@ android.api = 35
 android.minapi = 28
 android.ndk = 25b
 android.archs = arm64-v8a
-android.numeric_version = 21
+android.numeric_version = 23
 
 p4a.branch = master
+
 
 [buildozer]
 log_level = 2
