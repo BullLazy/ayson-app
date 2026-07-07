@@ -818,19 +818,37 @@ class Resolver:
 
         return ""
 
-    def _candidate_from_go_response(self, go_body, base_url, depth):
+        def _candidate_from_go_response(self, go_body, base_url, depth):
         data = parse_json_maybe(go_body)
 
+        candidates = []
+
         if data is not None:
-            for candidate in json_candidate_values(data):
+            candidates.extend(json_candidate_values(data))
+
+        candidates.extend(self.find_urls_in_text(go_body, base_url, from_page=False))
+
+        for candidate in dedupe(candidates):
+            candidate = absolutize_url(candidate, base_url)
+            if not candidate:
+                continue
+
+            h = host_of(candidate)
+
+            # Ay.live sonrasi gelen ara sistemleri final gibi vermiyoruz,
+            # ama kullanici Ac butonuyla manuel devam edebilsin diye ara link olarak donduruyoruz.
+            if h in {"tulink.fun", "lnk.news"}:
+                return candidate
+
+            try:
                 result = self._resolve_candidate(candidate, base_url, depth, from_page=False)
                 if result:
                     return result
-
-        for candidate in self.find_urls_in_text(go_body, base_url, from_page=False):
-            result = self._resolve_candidate(candidate, base_url, depth, from_page=False)
-            if result:
-                return result
+            except Exception:
+                # Ara link cozulmezse komple hata verme.
+                # Desteklenen ara linkse kullaniciya onu ver.
+                if h in {"tulink.fun", "lnk.news"}:
+                    return candidate
 
         return None
         
