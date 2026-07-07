@@ -433,13 +433,14 @@ class AysonApp(App):
         self.set_open_button(self.last_result)
         self._add_history(self.last_input, self.last_result, "success")
 
-    def _show_error(self, message, source_url):
+        def _show_error(self, message, source_url):
         self.is_solving = False
         self.solve_btn.text = "Coz"
         self.last_result = ""
 
         msg_low = (message or "").lower()
-        captcha = (
+
+        manual_needed = (
             "captcha" in msg_low
             or "turnstile" in msg_low
             or "recaptcha" in msg_low
@@ -447,7 +448,27 @@ class AysonApp(App):
             or "dogrulama" in msg_low
             or "anti-bot" in msg_low
             or "cloudflare" in msg_low
+            or "gerçek url döndürmedi" in msg_low
+            or "gercek url dondurmedi" in msg_low
+            or "/links/go2" in msg_low
+            or "tulink.fun" in msg_low
+            or "lnk.news" in msg_low
         )
+
+        if manual_needed:
+            self.output.text = (
+                "Bu link otomatik tamamen cozulemedi.\n\n"
+                "Uygulama yanlis link vermedi. Ac butonuna basinca link tarayicida acilir.\n"
+                "Tarayici ay.live sonrasinda tulink.fun / lnk.news gibi ara sayfalara yonlendirebilir.\n\n"
+                + source_url
+            )
+            self.set_status("Manuel devam gerekli", WARNING)
+            self.set_open_button(source_url)
+            self._add_history(source_url, source_url, "captcha")
+        else:
+            self.output.text = "Hata:\n" + message + "\n\nSurum:\n" + VERSION
+            self.set_status("Hata", ERROR)
+            self.set_open_button("")
 
         if captcha:
             self.output.text = (
