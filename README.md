@@ -1,7 +1,7 @@
 <p align="center">⚡ AYSON</p>
 
 <p align="center">
-  <img src="assets/banner.png" alt="AYSon Banner" width="100%">
+  <img src="assets/banner.png" alt="AYSON Banner" width="100%">
 </p><p align="center">
   <b>Fast Android URL Bypass Tool</b><br>
   Bypass supported short-link services directly on your Android device.
@@ -20,7 +20,7 @@
 
 📖 About
 
-AYSon is an Android application that automates supported short-link flows.
+AYSON is an Android application that automates supported short-link flows.
 
 The application performs its processing entirely on the user's device and does not rely on an external backend server.
 
