@@ -197,3 +197,9 @@ Special thanks to everyone who contributes by reporting issues, suggesting impro
 </p><p align="center">
 If you like this project, consider giving it a ⭐ on GitHub.
 </p>
+
+## ⭐ Support
+
+If you find this project useful, consider starring the repository.
+
+Feedback, bug reports and feature requests are always welcome.
