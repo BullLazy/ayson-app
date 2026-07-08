@@ -96,7 +96,7 @@ Add screenshots inside the screenshots folder.
 📲 Usage
 
 1. Copy a supported short link.
-2. Open AYSon.
+2. Open AYSON.
 3. Paste the link.
 4. Tap Start.
 5. Wait for processing.
@@ -106,7 +106,7 @@ Add screenshots inside the screenshots folder.
 
 🔒 Privacy
 
-AYSon does not operate its own processing server.
+AYSON does not operate its own processing server.
 
 Processing is performed locally on the user's device.
 
